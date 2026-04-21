@@ -1,0 +1,12 @@
+/target/
+**/*.rs.bk
+Cargo.lock
+# Per-contributor IDE + editor noise.
+.idea/
+.vscode/
+*.swp
+# Tauri / JS (added in a follow-up — here early so that commit's diff
+# is just the scaffold, not scaffold + gitignore-for-scaffold).
+node_modules/
+crates/desktop/src-tauri/target/
+crates/desktop/dist/

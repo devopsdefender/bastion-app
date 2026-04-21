@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/cli",
+]
+# `crates/desktop/src-tauri` joins the workspace after the first Tauri
+# scaffold commit — kept out today so `cargo check` at the repo root
+# doesn't require the full Tauri toolchain on every contributor.
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/devopsdefender/bastion-app"
+rust-version = "1.82"
+
+[workspace.dependencies]
+bastion-core = { path = "crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "process", "net"] }
+anyhow = "1"
+thiserror = "2"
+directories = "5"
+rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets"] }

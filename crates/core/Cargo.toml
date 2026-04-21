@@ -1,0 +1,21 @@
+[package]
+name = "bastion-core"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Shared types + persistence for bastion-app (CLI, desktop, eventually mobile)."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+directories.workspace = true
+rand.workspace = true
+sha2 = "0.10"
+x25519-dalek.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

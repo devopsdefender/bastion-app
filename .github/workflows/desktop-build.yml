@@ -9,17 +9,13 @@ on:
 
 jobs:
   macos:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            target: aarch64-apple-darwin
-            label: arm64
-          - runner: macos-13
-            target: x86_64-apple-darwin
-            label: x64
-    runs-on: ${{ matrix.runner }}
+    # Single Apple Silicon runner, cross-builds x86_64 from the same
+    # job. GitHub's macos-13 (Intel) runner pool is effectively
+    # unavailable (deprecated through 2026), so a matrix across the
+    # two arches just strands the x86_64 cell in the queue. cargo +
+    # clang on arm64 produce x86_64 Mach-O binaries natively; Tauri's
+    # bundler + hdiutil + codesign all work cross-arch on macOS.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +27,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -44,21 +40,31 @@ jobs:
         working-directory: crates/desktop
         run: npm ci
 
-      - name: Build desktop bundle (unsigned)
+      - name: Build arm64 bundle
         working-directory: crates/desktop
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: cargo tauri build --target aarch64-apple-darwin
+
+      - name: Build x64 bundle (cross-compile)
+        working-directory: crates/desktop
+        run: cargo tauri build --target x86_64-apple-darwin
 
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          cp crates/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg dist/ 2>/dev/null || true
-          (cd crates/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos \
-            && tar -czf "$GITHUB_WORKSPACE/dist/bastion-${{ matrix.label }}.app.tar.gz" *.app) || true
+          for arch_target in arm64:aarch64-apple-darwin x64:x86_64-apple-darwin; do
+            label=${arch_target%%:*}
+            tgt=${arch_target##*:}
+            cp crates/desktop/src-tauri/target/$tgt/release/bundle/dmg/*.dmg \
+              "dist/bastion-$label.dmg" 2>/dev/null || true
+            (cd crates/desktop/src-tauri/target/$tgt/release/bundle/macos \
+              && tar -czf "$GITHUB_WORKSPACE/dist/bastion-$label.app.tar.gz" *.app) \
+              2>/dev/null || true
+          done
           ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bastion-desktop-${{ matrix.label }}
+          name: bastion-desktop-macos
           path: dist/
           if-no-files-found: error
 

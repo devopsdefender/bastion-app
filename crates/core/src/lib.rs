@@ -18,7 +18,9 @@
 //! (`dd_enclave::tunnel`) to keep this first skeleton build-small.
 
 pub mod connector;
+pub mod dd_enclave;
 pub mod identity;
+pub mod noise;
 pub mod store;
 
 pub use connector::{Connector, ConnectorKind};

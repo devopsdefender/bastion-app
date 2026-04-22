@@ -14,6 +14,8 @@
 //!   - A ratatui TUI that shows the sidebar + current session side
 //!     by side, same UX as the desktop app will have.
 
+mod connect;
+
 use anyhow::{anyhow, Context, Result};
 use bastion_core::{
     fingerprint, keypair_from_seed, load_or_mint_seed, Connector, ConnectorKind, Store,
@@ -46,6 +48,13 @@ enum Cmd {
     },
     /// Remove a connector by id.
     Rm {
+        id: String,
+    },
+    /// Open an interactive session on the connector. Today:
+    /// dd-enclave only (Noise_IK over `/noise/shell/{sid}`). SSH +
+    /// LocalShell land in follow-up milestones.
+    Connect {
+        /// Connector id (from `bastion list`).
         id: String,
     },
 }
@@ -96,6 +105,14 @@ fn main() -> Result<()> {
         Cmd::List => list(&config_dir),
         Cmd::Add { kind } => add(&config_dir, kind),
         Cmd::Rm { id } => remove(&config_dir, &id),
+        Cmd::Connect { id } => {
+            // Minimal tokio runtime just for the connect command —
+            // whoami/list/add/rm stay sync so they're snappy on a
+            // cold shell, and we don't spin up a multi-threaded
+            // scheduler to print a fingerprint.
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(connect::run(&config_dir, &id))
+        }
     }
 }
 

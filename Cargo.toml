@@ -4,9 +4,15 @@ members = [
     "crates/core",
     "crates/cli",
 ]
-# `crates/desktop/src-tauri` joins the workspace after the first Tauri
-# scaffold commit — kept out today so `cargo check` at the repo root
-# doesn't require the full Tauri toolchain on every contributor.
+# `crates/desktop/src-tauri` is deliberately OUT of the workspace so
+# a stock `cargo build` at repo root doesn't need GTK/WebKit system
+# headers (cairo, webkit2gtk, libsoup). Build the desktop app from
+# its own dir:
+#   cd crates/desktop && npm install && cd src-tauri && cargo tauri dev
+# Prereqs on Ubuntu/Debian:
+#   apt install libwebkit2gtk-4.1-dev libssl-dev build-essential \
+#               curl wget file libxdo-dev libsoup-3.0-dev \
+#               libjavascriptcoregtk-4.1-dev
 
 [workspace.package]
 edition = "2021"

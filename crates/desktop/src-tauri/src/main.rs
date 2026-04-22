@@ -3,6 +3,7 @@
 mod state;
 mod commands {
     pub mod connectors;
+    pub mod fleet;
     pub mod identity;
     pub mod pair;
     pub mod session;
@@ -39,6 +40,7 @@ fn main() {
             commands::connectors::add_connector,
             commands::connectors::remove_connector,
             commands::pair::pair,
+            commands::fleet::fetch_agents,
             commands::session::connect_start,
             commands::session::connect_send,
             commands::session::connect_close,

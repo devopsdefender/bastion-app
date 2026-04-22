@@ -16,19 +16,10 @@
   let deployment = $state("");
   let tail = $state(200);
 
-  $effect(() => {
-    // Connector changed — close any existing session, reset.
-    const prev = session_id;
-    session_id = null;
-    pubkey_hex = null;
-    verified = false;
-    output = null;
-    err = null;
-    if (prev) {
-      // fire-and-forget close; we don't gate the UI on it.
-      api.connect_close(prev).catch(() => {});
-    }
-  });
+  // Parent uses `{#key connector.id}` so this component remounts on
+  // connector change — local state is fresh per connector with no
+  // in-component reset logic. An earlier `$effect` here wiped
+  // `session_id` on self-writes, which made Connect appear silent.
 
   async function open_session() {
     connecting = true;

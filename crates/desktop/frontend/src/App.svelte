@@ -51,7 +51,9 @@
     onRemove={handle_remove}
   />
   {#if active}
-    <SessionPane connector={active} />
+    {#key active.id}
+      <SessionPane connector={active} />
+    {/key}
   {:else}
     <section class="empty-pane">
       <h1>bastion</h1>

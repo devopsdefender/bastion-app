@@ -3,10 +3,8 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/cli",
+    "crates/desktop/src-tauri",
 ]
-# `crates/desktop/src-tauri` joins the workspace after the first Tauri
-# scaffold commit — kept out today so `cargo check` at the repo root
-# doesn't require the full Tauri toolchain on every contributor.
 
 [workspace.package]
 edition = "2021"

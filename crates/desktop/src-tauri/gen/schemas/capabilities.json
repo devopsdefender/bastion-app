@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Desktop capabilities — no fs, no shell, no process. All heavy lifting (PTY, transport, crypto) lives in Rust commands; the webview only calls invoke().","local":true,"windows":["main"],"permissions":["core:default","opener:default"]}}

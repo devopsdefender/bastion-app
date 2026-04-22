@@ -20,7 +20,7 @@ const FRAME_CTRL: u8 = 0x02;
 /// Response shape from `GET {origin}/attest`. `tdx_quote_b64` +
 /// `report_data_b64` are populated once the server has EE access
 /// (Phase 2d); absent otherwise — pin the pubkey regardless.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestResponse {
     pub noise_pubkey_hex: String,
     #[serde(default)]

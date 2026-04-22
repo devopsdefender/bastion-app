@@ -1,7 +1,11 @@
 //! Tauri shell around `bastion-core`. Every command here is a thin
 //! delegation to the core library — if you find yourself writing
 //! logic in this file, it probably belongs one layer down so the
-//! CLI can reuse it.
+//! CLI can reuse it. The one exception is `session.rs`, which has
+//! to coordinate Tauri's command/event split into a duplex byte
+//! stream.
+
+mod session;
 
 use bastion_core::{
     dd_enclave, fingerprint, identity, keypair_from_seed, load_or_mint_seed, Connector,
@@ -84,6 +88,59 @@ async fn attest(origin: String) -> Result<dd_enclave::AttestResponse, String> {
     dd_enclave::fetch_attest(&origin).await.map_err(|e| e.to_string())
 }
 
+// ── Session lifecycle ───────────────────────────────────────────────
+// Thin wrappers around `session::Manager`. Each command returns
+// immediately after issuing the underlying Noise call; output flows
+// asynchronously as `session:<handle>:output` events.
+
+#[tauri::command]
+async fn session_open(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    sessions: tauri::State<'_, session::Manager>,
+    connector_id: String,
+) -> Result<session::SessionOpened, String> {
+    sessions
+        .open(app, state.config_dir.clone(), connector_id)
+        .await
+}
+
+#[tauri::command]
+async fn session_input(
+    sessions: tauri::State<'_, session::Manager>,
+    handle: String,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    sessions.input(&handle, bytes).await
+}
+
+#[tauri::command]
+async fn session_resize(
+    sessions: tauri::State<'_, session::Manager>,
+    handle: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    sessions.resize(&handle, cols, rows).await
+}
+
+#[tauri::command]
+async fn session_hello(
+    sessions: tauri::State<'_, session::Manager>,
+    handle: String,
+    have_up_to: i64,
+) -> Result<(), String> {
+    sessions.hello(&handle, have_up_to).await
+}
+
+#[tauri::command]
+async fn session_close(
+    sessions: tauri::State<'_, session::Manager>,
+    handle: String,
+) -> Result<(), String> {
+    sessions.close(&handle).await
+}
+
 /// Tauri entry point. Called from both the desktop binary
 /// (`src/main.rs`) and from `tauri-cli`'s mobile bootstrap macros.
 pub fn run() {
@@ -93,12 +150,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
         .manage(AppState { config_dir })
+        .manage(session::Manager::new())
         .invoke_handler(tauri::generate_handler![
             whoami,
             list_connectors,
             add_dd_enclave,
             remove_connector,
             attest,
+            session_open,
+            session_input,
+            session_resize,
+            session_hello,
+            session_close,
         ])
         .run(tauri::generate_context!())
         .expect("tauri app run");

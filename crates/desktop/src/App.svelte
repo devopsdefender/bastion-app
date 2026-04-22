@@ -1,6 +1,7 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
   import Sidebar from "./lib/Sidebar.svelte";
+  import TerminalPane from "./lib/TerminalPane.svelte";
 
   // Top-level UI state. Svelte 5 runes.
   let me = $state(null);
@@ -51,13 +52,17 @@
   <main class="pane">
     {#if err}
       <pre class="err">{err}</pre>
+    {:else if selected && selected.kind === "dd-enclave"}
+      <TerminalPane connector={selected} />
     {:else if selected}
-      <h2>{selected.label}</h2>
-      <p class="meta">kind: {selected.kind} · id: {selected.id}</p>
-      <pre>{JSON.stringify(selected.config, null, 2)}</pre>
-      <p class="hint">
-        Session launch lands in the next milestone. Connector management works today.
-      </p>
+      <div class="placeholder">
+        <h2>{selected.label}</h2>
+        <p class="meta">kind: {selected.kind} · id: {selected.id}</p>
+        <pre>{JSON.stringify(selected.config, null, 2)}</pre>
+        <p class="hint">
+          Interactive sessions are dd-enclave-only right now.
+        </p>
+      </div>
     {:else}
       <p class="hint">Select a connector, or add one via the sidebar.</p>
     {/if}
@@ -77,6 +82,12 @@
     height: 100vh;
   }
   .pane {
+    overflow: hidden;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .placeholder {
     padding: 24px;
     overflow: auto;
   }

@@ -9,4 +9,5 @@ Cargo.lock
 # is just the scaffold, not scaffold + gitignore-for-scaffold).
 node_modules/
 crates/desktop/src-tauri/target/
+crates/desktop/src-tauri/gen/
 crates/desktop/dist/

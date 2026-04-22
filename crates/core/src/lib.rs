@@ -17,10 +17,16 @@
 //! routes. That handshake lives in a follow-up module here
 //! (`dd_enclave::tunnel`) to keep this first skeleton build-small.
 
+pub mod attest;
 pub mod connector;
+pub mod ee_client;
 pub mod identity;
+pub mod noise_client;
 pub mod store;
 
+pub use attest::{fetch as fetch_attest, Attestation};
 pub use connector::{Connector, ConnectorKind};
+pub use ee_client::EeClient;
 pub use identity::{fingerprint, keypair_from_seed, load_or_mint_seed, Keypair};
+pub use noise_client::NoiseClient;
 pub use store::Store;

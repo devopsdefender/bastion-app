@@ -35,10 +35,10 @@ impl Store {
     pub fn load(config_dir: &Path) -> Result<Self> {
         let path = config_dir.join("connectors.json");
         let connectors = if path.exists() {
-            let text = fs::read_to_string(&path)
-                .with_context(|| format!("read {}", path.display()))?;
-            let file: StoreFile = serde_json::from_str(&text)
-                .with_context(|| format!("parse {}", path.display()))?;
+            let text =
+                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+            let file: StoreFile =
+                serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
             file.connectors
         } else {
             Vec::new()

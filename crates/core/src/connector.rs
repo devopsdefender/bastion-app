@@ -112,7 +112,10 @@ mod tests {
         assert_eq!(back.id, c.id);
         assert_eq!(back.label, c.label);
         assert_eq!(back.kind, ConnectorKind::SshHost);
-        assert_eq!(back.config["hostname"], serde_json::json!("prod.example.com"));
+        assert_eq!(
+            back.config["hostname"],
+            serde_json::json!("prod.example.com")
+        );
     }
 
     #[test]

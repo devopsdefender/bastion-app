@@ -33,13 +33,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS universal (arm64 + x86_64 bundled into one .dmg)
+          # macOS universal .dmg (tauri-action lipoes both archs).
+          # `bundle-flags` is for the Tauri bundle only; the CLI
+          # `cargo build` doesn't understand `universal-apple-darwin`
+          # and uses the host arch (arm64 on macos-14 runner).
           - host: macos-14
-            target-flags: "--target universal-apple-darwin"
+            bundle-flags: "--target universal-apple-darwin"
+            cli-flags: ""
+            cli-out: "target/release/bastion"
             rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
-            label: "macos-universal"
+            label: "macos-arm64"
           - host: ubuntu-22.04
-            target-flags: ""
+            bundle-flags: ""
+            cli-flags: ""
+            cli-out: "target/release/bastion"
             rust-targets: "x86_64-unknown-linux-gnu"
             label: "linux-x86_64"
     runs-on: ${{ matrix.host }}
@@ -80,13 +87,13 @@ jobs:
           npm run build
 
       - name: Build CLI
-        run: cargo build --release -p bastion-cli ${{ matrix.target-flags }}
+        run: cargo build --release -p bastion-cli ${{ matrix.cli-flags }}
 
       - name: Build desktop bundle
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: crates/desktop/src-tauri
-          args: ${{ matrix.target-flags }}
+          args: ${{ matrix.bundle-flags }}
           # Don't auto-create a release from the action — we handle
           # artifact upload ourselves below so the CLI binary rides
           # along in the same release.
@@ -98,21 +105,17 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/dist
 
-          # CLI binary (host-arch for Linux; universal for macOS via cargo)
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            cp target/universal-apple-darwin/release/bastion \
-               /tmp/dist/bastion-${{ matrix.label }}
-          else
-            cp target/release/bastion \
-               /tmp/dist/bastion-${{ matrix.label }}
-          fi
+          # CLI — host-arch binary at cli-out.
+          cp "${{ matrix.cli-out }}" /tmp/dist/bastion-${{ matrix.label }}
 
-          # Desktop bundle(s). Tauri's bundle paths:
-          #   macOS: target/<tgt>/release/bundle/dmg/*.dmg
-          #   Linux: target/release/bundle/{appimage,deb}/*
+          # Desktop bundle(s). Tauri paths depend on whether
+          # bundle-flags carried a --target.
           shopt -s nullglob
           for f in \
             target/universal-apple-darwin/release/bundle/dmg/*.dmg \
+            target/aarch64-apple-darwin/release/bundle/dmg/*.dmg \
+            target/x86_64-apple-darwin/release/bundle/dmg/*.dmg \
+            target/release/bundle/dmg/*.dmg \
             target/release/bundle/appimage/*.AppImage \
             target/release/bundle/deb/*.deb; do
             cp "$f" /tmp/dist/

@@ -16,6 +16,14 @@ directories.workspace = true
 rand.workspace = true
 sha2 = "0.10"
 x25519-dalek.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+snow.workspace = true
+hex.workspace = true
+base64.workspace = true
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

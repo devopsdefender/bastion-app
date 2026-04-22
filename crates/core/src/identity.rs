@@ -47,8 +47,8 @@ pub fn keypair_from_seed(seed: &[u8; SEED_LEN]) -> Keypair {
 pub fn load_or_mint_seed(config_dir: &Path) -> Result<[u8; SEED_LEN]> {
     let path = config_dir.join("identity.key");
     if path.exists() {
-        let bytes = fs::read(&path)
-            .with_context(|| format!("read identity.key at {}", path.display()))?;
+        let bytes =
+            fs::read(&path).with_context(|| format!("read identity.key at {}", path.display()))?;
         if bytes.len() != SEED_LEN {
             return Err(anyhow!(
                 "identity.key at {} is {} bytes; expected {}",
@@ -61,16 +61,14 @@ pub fn load_or_mint_seed(config_dir: &Path) -> Result<[u8; SEED_LEN]> {
         out.copy_from_slice(&bytes);
         return Ok(out);
     }
-    fs::create_dir_all(config_dir)
-        .with_context(|| format!("mkdir {}", config_dir.display()))?;
+    fs::create_dir_all(config_dir).with_context(|| format!("mkdir {}", config_dir.display()))?;
     let mut seed = [0u8; SEED_LEN];
     rand::rngs::OsRng.fill_bytes(&mut seed);
     // Write atomically via a tempfile in the same dir so a crash can't
     // leave a truncated identity file.
     let tmp = path.with_extension("key.tmp");
     {
-        let mut f = fs::File::create(&tmp)
-            .with_context(|| format!("create {}", tmp.display()))?;
+        let mut f = fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
         f.write_all(&seed)?;
         f.sync_all()?;
     }

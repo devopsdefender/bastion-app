@@ -14,9 +14,10 @@
 //!   - A ratatui TUI that shows the sidebar + current session side
 //!     by side, same UX as the desktop app will have.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bastion_core::{
-    fingerprint, keypair_from_seed, load_or_mint_seed, Connector, ConnectorKind, Store,
+    fetch_attest, fingerprint, keypair_from_seed, load_or_mint_seed, Attestation, Connector,
+    ConnectorKind, EeClient, NoiseClient, Store,
 };
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -45,8 +46,30 @@ enum Cmd {
         kind: AddKind,
     },
     /// Remove a connector by id.
-    Rm {
+    Rm { id: String },
+    /// Register this device's pubkey with a DD control plane so its
+    /// enclaves will accept Noise_IK handshakes from us.
+    Pair {
+        /// Base URL of the DD control plane (e.g. `https://app.devopsdefender.com`).
+        cp_url: String,
+        /// Human-readable label the CP shows for this device.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Open a Noise_IK session to a `dd-enclave` connector and call
+    /// a single EE method. v0 supports `health`, `list`, `logs`.
+    Connect {
+        /// Connector id (from `bastion list`).
         id: String,
+        /// Which EE method to call. Default `health` — cheap sanity check.
+        #[arg(long, default_value = "health")]
+        method: String,
+        /// For `logs`: deployment id to tail.
+        #[arg(long)]
+        deployment: Option<String>,
+        /// For `logs`: number of lines to tail.
+        #[arg(long, default_value_t = 200)]
+        tail: u32,
     },
 }
 
@@ -84,7 +107,8 @@ enum AddKind {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_dir = match cli.config_dir {
         Some(p) => p,
@@ -96,6 +120,13 @@ fn main() -> Result<()> {
         Cmd::List => list(&config_dir),
         Cmd::Add { kind } => add(&config_dir, kind),
         Cmd::Rm { id } => remove(&config_dir, &id),
+        Cmd::Pair { cp_url, label } => pair(&config_dir, &cp_url, label).await,
+        Cmd::Connect {
+            id,
+            method,
+            deployment,
+            tail,
+        } => connect(&config_dir, &id, &method, deployment.as_deref(), tail).await,
     }
 }
 
@@ -125,11 +156,7 @@ fn list(dir: &std::path::Path) -> Result<()> {
         let cfg = if c.config.is_empty() {
             String::new()
         } else {
-            let bits: Vec<String> = c
-                .config
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
+            let bits: Vec<String> = c.config.iter().map(|(k, v)| format!("{k}={v}")).collect();
             format!("  [{}]", bits.join(", "))
         };
         println!("{:<36}  {:<12}  {}{}", c.id, kind_str(c.kind), c.label, cfg);
@@ -149,10 +176,8 @@ fn add(dir: &std::path::Path, kind: AddKind) -> Result<()> {
             .with_config("host", serde_json::json!(host))
             .with_config("user", serde_json::json!(user))
             .with_config("port", serde_json::json!(port)),
-        AddKind::DdEnclave { label, origin } => {
-            Connector::new(ConnectorKind::DdEnclave, label)
-                .with_config("origin", serde_json::json!(origin))
-        }
+        AddKind::DdEnclave { label, origin } => Connector::new(ConnectorKind::DdEnclave, label)
+            .with_config("origin", serde_json::json!(origin)),
         AddKind::Anthropic { label } => {
             let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
                 anyhow!("set ANTHROPIC_API_KEY in env before `bastion add anthropic`")
@@ -182,6 +207,143 @@ fn remove(dir: &std::path::Path, id: &str) -> Result<()> {
         }
         None => Err(anyhow!("no connector with id {id}")),
     }
+}
+
+async fn pair(dir: &std::path::Path, cp_url: &str, label: Option<String>) -> Result<()> {
+    let seed = load_or_mint_seed(dir)?;
+    let kp = keypair_from_seed(&seed);
+    let pubkey_hex: String = kp
+        .public
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let label = label.unwrap_or_else(|| format!("bastion-{}", fingerprint(&seed)));
+
+    let url = format!("{}/api/v1/devices", cp_url.trim_end_matches('/'));
+    let http = reqwest::Client::new();
+    let resp = http
+        .post(&url)
+        .json(&serde_json::json!({ "pubkey": pubkey_hex, "label": label }))
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("POST {url} -> {status}: {body}");
+    }
+    println!("paired with {cp_url}");
+    println!("  pubkey: {pubkey_hex}");
+    println!("  label:  {label}");
+    println!("  reply:  {body}");
+    println!();
+    println!("next: add a specific enclave via");
+    println!("  bastion add dd-enclave --label <name> --origin https://ee.<host>");
+    println!("then:");
+    println!("  bastion connect <id>");
+    Ok(())
+}
+
+async fn connect(
+    dir: &std::path::Path,
+    id: &str,
+    method: &str,
+    deployment: Option<&str>,
+    tail: u32,
+) -> Result<()> {
+    let mut store = Store::load(dir)?;
+    let conn = store
+        .list()
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or_else(|| anyhow!("no connector with id {id}"))?;
+
+    if conn.kind != ConnectorKind::DdEnclave {
+        bail!(
+            "connect only supports dd-enclave connectors today (got {:?})",
+            conn.kind
+        );
+    }
+    let origin = conn
+        .config
+        .get("origin")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("connector {id} missing `origin` config"))?
+        .to_string();
+
+    // Fetch attest from the enclave + reconcile with any pinned
+    // pubkey on the connector (TOFU — ITA verification is a follow-up).
+    let attestation = fetch_attest(&origin).await.context("fetch /attest")?;
+
+    let (attestation, mut conn) = tofu_pin(conn, attestation)?;
+
+    println!(
+        "→ {origin}  (noise pubkey {})",
+        &attestation.pubkey_hex[..16]
+    );
+
+    let seed = load_or_mint_seed(dir)?;
+    let kp = keypair_from_seed(&seed);
+    let enclave_pubkey = bastion_core::attest::decode_pubkey(&attestation.pubkey_hex)?;
+
+    let mut session = NoiseClient::connect(&origin, &kp, &enclave_pubkey)
+        .await
+        .context("noise handshake")?;
+    println!("✓ noise handshake complete");
+
+    let mut ee = EeClient::new(&mut session);
+    let value = match method {
+        "health" => ee.health().await?,
+        "list" => ee.list().await?,
+        "logs" => {
+            let dep =
+                deployment.ok_or_else(|| anyhow!("--deployment required for `--method logs`"))?;
+            ee.logs(dep, tail).await?
+        }
+        other => bail!("unknown method `{other}` (try health / list / logs)"),
+    };
+    println!("{}", serde_json::to_string_pretty(&value)?);
+
+    session.close().await?;
+
+    // Persist the TOFU pin (and any verified=true state from a future
+    // ITA-enabled client) back to disk so the next connect reuses it.
+    let attest_json = serde_json::to_value(&attestation)?;
+    conn.config.insert("attestation".into(), attest_json);
+    store.upsert(conn);
+    store.save()?;
+    Ok(())
+}
+
+/// On first connect, pin the enclave's pubkey to the connector. On
+/// subsequent connects, refuse if the pubkey moved — an unscheduled
+/// pubkey rotation (enclave restart) requires explicit re-pair.
+fn tofu_pin(conn: Connector, fresh: Attestation) -> Result<(Attestation, Connector)> {
+    if let Some(existing_val) = conn.config.get("attestation") {
+        let existing: Attestation = serde_json::from_value(existing_val.clone())
+            .context("pinned attestation is not the expected shape")?;
+        if existing.pubkey_hex != fresh.pubkey_hex {
+            bail!(
+                "attestation pubkey for {} changed ({} -> {}). Re-pair with `bastion rm {}` \
+                 + `bastion add dd-enclave ...` if this is expected.",
+                conn.label,
+                &existing.pubkey_hex[..16],
+                &fresh.pubkey_hex[..16],
+                conn.id,
+            );
+        }
+        // Same pubkey — keep the older `fetched_at_ms` and `verified`
+        // flag so we don't silently regress a previously-verified pin
+        // to TOFU.
+        return Ok((existing, conn));
+    }
+    println!(
+        "first connect — pinning enclave pubkey {} (TOFU; ITA verification pending)",
+        &fresh.pubkey_hex[..16]
+    );
+    Ok((fresh, conn))
 }
 
 fn kind_str(k: ConnectorKind) -> &'static str {

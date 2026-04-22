@@ -1,0 +1,78 @@
+name: desktop-build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            label: arm64
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            label: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/desktop/src-tauri -> target
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Frontend deps
+        working-directory: crates/desktop
+        run: npm ci
+
+      - name: Build desktop bundle (unsigned)
+        working-directory: crates/desktop
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp crates/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg dist/ 2>/dev/null || true
+          (cd crates/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos \
+            && tar -czf "$GITHUB_WORKSPACE/dist/bastion-${{ matrix.label }}.app.tar.gz" *.app) || true
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bastion-desktop-${{ matrix.label }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: macos
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

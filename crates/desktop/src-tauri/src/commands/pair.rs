@@ -1,10 +1,24 @@
-//! `pair <cp-url>` — enroll this device's X25519 pubkey with a DD
-//! control plane so its enclaves will accept Noise_IK handshakes
-//! from us.
+//! `pair` — bounce the operator's browser at the CP's
+//! `/admin/enroll` page so they can authenticate via CF Access and
+//! confirm enrolling this device's X25519 pubkey.
+//!
+//! Before this landed, `pair` POSTed directly to `/api/v1/devices`
+//! from the desktop process — but that route is behind the CP's
+//! human CF Access app, so the POST got the CF login HTML back and
+//! the enrollment silently didn't happen. `bastion connect` then
+//! failed the Noise_IK handshake with `unknown peer`.
+//!
+//! The new flow is three clicks:
+//!   1. Desktop "pair this device" opens the browser.
+//!   2. CF Access challenges; operator logs in.
+//!   3. Confirm button on `/admin/enroll` fires a same-origin POST
+//!      to `/api/v1/devices` (cookie carries) → enrolled.
 
 use bastion_core::{fingerprint, keypair_from_seed, load_or_mint_seed};
 use serde::Deserialize;
+use tauri::AppHandle;
 use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::state::AppState;
 
@@ -15,7 +29,11 @@ pub struct PairArgs {
 }
 
 #[tauri::command]
-pub async fn pair(state: State<'_, AppState>, args: PairArgs) -> Result<serde_json::Value, String> {
+pub async fn pair(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: PairArgs,
+) -> Result<serde_json::Value, String> {
     let seed = load_or_mint_seed(&state.config_dir).map_err(|e| e.to_string())?;
     let kp = keypair_from_seed(&seed);
     let pubkey_hex: String = kp
@@ -28,25 +46,35 @@ pub async fn pair(state: State<'_, AppState>, args: PairArgs) -> Result<serde_js
         .label
         .unwrap_or_else(|| format!("bastion-{}", fingerprint(&seed)));
 
-    let url = format!("{}/api/v1/devices", args.cp_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .json(&serde_json::json!({ "pubkey": pubkey_hex, "label": label }))
-        .send()
-        .await
-        .map_err(|e| format!("POST {url}: {e}"))?;
-    let status = resp.status();
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .unwrap_or(serde_json::json!({"status_only": true}));
-    if !status.is_success() {
-        return Err(format!("POST {url} → {status}: {body}"));
-    }
+    let cp_url = bastion_core::attest::normalize_origin(&args.cp_url);
+    let url = format!(
+        "{}/admin/enroll?pubkey={}&label={}",
+        cp_url.trim_end_matches('/'),
+        pubkey_hex,
+        urlencode(&label),
+    );
+
+    app.opener()
+        .open_url(&url, None::<String>)
+        .map_err(|e| format!("open browser: {e}"))?;
+
     Ok(serde_json::json!({
-        "status": status.as_u16(),
-        "pubkey": pubkey_hex,
+        "url": url,
+        "cp_url": cp_url,
+        "pubkey_hex": pubkey_hex,
         "label": label,
-        "body": body,
     }))
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

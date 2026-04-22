@@ -36,8 +36,13 @@ pub struct Attestation {
 
 /// Fetch the enclave's attestation and decode the Noise static
 /// pubkey. Fails if `pubkey_hex` isn't 32 bytes.
+///
+/// If `origin` is missing a scheme (e.g. `app.devopsdefender.com`),
+/// `https://` is assumed — DD enclaves only serve TLS, and the
+/// connector-add UX tolerates either form.
 pub async fn fetch(origin: &str) -> Result<Attestation> {
-    let url = format!("{}/attest", origin.trim_end_matches('/'));
+    let base = normalize_origin(origin);
+    let url = format!("{}/attest", base.trim_end_matches('/'));
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -57,6 +62,23 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
         verified: false,
         fetched_at_ms: now_ms(),
     })
+}
+
+/// Add `https://` if the origin has no scheme. Leaves `http://` and
+/// `https://` untouched. Also accepts `ws://` / `wss://` so a hand-
+/// typed connector origin that was already normalized for Noise
+/// round-trips still works.
+pub fn normalize_origin(origin: &str) -> String {
+    let o = origin.trim();
+    if o.starts_with("http://")
+        || o.starts_with("https://")
+        || o.starts_with("ws://")
+        || o.starts_with("wss://")
+    {
+        o.to_string()
+    } else {
+        format!("https://{o}")
+    }
 }
 
 /// Parse a hex-encoded Noise static pubkey. Accepts upper or lower case.

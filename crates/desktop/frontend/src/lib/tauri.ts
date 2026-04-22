@@ -35,10 +35,10 @@ export const api = {
   remove_connector: (id: string) => invoke<void>("remove_connector", { id }),
   pair: (cp_url: string, label?: string) =>
     invoke<{
-      status: number;
-      pubkey: string;
+      url: string;
+      cp_url: string;
+      pubkey_hex: string;
       label: string;
-      body: unknown;
     }>("pair", { args: { cp_url, label } }),
 
   connect_start: (connector_id: string) =>

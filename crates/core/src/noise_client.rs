@@ -100,7 +100,12 @@ impl NoiseClient {
 }
 
 fn to_ws_url(origin: &str) -> Result<String> {
-    let u = url::Url::parse(origin).with_context(|| format!("parse origin URL: {origin}"))?;
+    // Accept bare host (`app.devopsdefender.com`) and default to
+    // `https://` — matches `attest::fetch`'s behavior so a connector
+    // saved without an explicit scheme works for both round-trips.
+    let normalized = crate::attest::normalize_origin(origin);
+    let u =
+        url::Url::parse(&normalized).with_context(|| format!("parse origin URL: {normalized}"))?;
     let scheme = match u.scheme() {
         "http" => "ws",
         "https" => "wss",

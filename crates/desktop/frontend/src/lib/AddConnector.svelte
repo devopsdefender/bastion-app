@@ -33,7 +33,10 @@
     pair_result = null;
     try {
       const r = await api.pair(cp_url, label || undefined);
-      pair_result = `paired as ${r.label} — CP returned ${r.status}`;
+      pair_result =
+        `opened ${r.url} in your browser — log in (CF Access) and ` +
+        `click Confirm on the enrollment page. When it says "Enrolled ✓", ` +
+        `close the tab and add the enclave origin below.`;
     } catch (e) {
       err = String(e);
     } finally {

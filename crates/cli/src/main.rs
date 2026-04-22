@@ -220,29 +220,44 @@ async fn pair(dir: &std::path::Path, cp_url: &str, label: Option<String>) -> Res
         .collect();
     let label = label.unwrap_or_else(|| format!("bastion-{}", fingerprint(&seed)));
 
-    let url = format!("{}/api/v1/devices", cp_url.trim_end_matches('/'));
-    let http = reqwest::Client::new();
-    let resp = http
-        .post(&url)
-        .json(&serde_json::json!({ "pubkey": pubkey_hex, "label": label }))
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("POST {url} -> {status}: {body}");
-    }
-    println!("paired with {cp_url}");
-    println!("  pubkey: {pubkey_hex}");
-    println!("  label:  {label}");
-    println!("  reply:  {body}");
+    // Tolerate bare-host input ("app.devopsdefender.com"). DD CPs
+    // only serve TLS, so an unscheme'd input means https.
+    let cp_url = bastion_core::attest::normalize_origin(cp_url);
+    let url = format!(
+        "{}/admin/enroll?pubkey={}&label={}",
+        cp_url.trim_end_matches('/'),
+        pubkey_hex,
+        urlencode(&label),
+    );
+
+    println!("pair: open this URL in your browser and click Confirm.");
+    println!("      the page is behind CF Access, so log in if prompted.");
     println!();
-    println!("next: add a specific enclave via");
-    println!("  bastion add dd-enclave --label <name> --origin https://ee.<host>");
-    println!("then:");
-    println!("  bastion connect <id>");
+    println!("  {url}");
+    println!();
+    println!("device pubkey: {pubkey_hex}");
+    println!("label:         {label}");
+    println!();
+    println!("next: once the browser says \"Enrolled ✓\",");
+    println!("      bastion add dd-enclave --label <name> --origin <cp-or-enclave>");
+    println!("      bastion connect <id>");
     Ok(())
+}
+
+/// Minimal query-string encoder — escapes everything that isn't
+/// unreserved per RFC 3986. Pulled in so we don't add a dep for one
+/// call site.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 async fn connect(

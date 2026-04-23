@@ -1,15 +1,24 @@
 <script lang="ts">
   import Sidebar from "./lib/Sidebar.svelte";
   import SessionPane from "./lib/SessionPane.svelte";
-  import FleetPane from "./lib/FleetPane.svelte";
   import AddConnector from "./lib/AddConnector.svelte";
-  import type { Connector, Whoami } from "./lib/tauri";
+  import NewSessionDialog from "./lib/NewSessionDialog.svelte";
+  import type { Connector, Whoami, SearchHit, SessionKind } from "./lib/tauri";
+  import type { SessionRow } from "./lib/SessionsList.svelte";
   import { api } from "./lib/tauri";
+
+  type ActiveSession = {
+    agent_origin: string;
+    tmux_name: string;
+    mode: "new" | "attach";
+    kind: SessionKind;
+  };
 
   let whoami: Whoami | null = $state(null);
   let connectors: Connector[] = $state([]);
-  let active_id: string | null = $state(null);
+  let active: ActiveSession | null = $state(null);
   let showAdd = $state(false);
+  let showNewSession = $state(false);
   let boot_err: string | null = $state(null);
 
   async function boot() {
@@ -25,18 +34,46 @@
     connectors = await api.list_connectors();
   }
 
-  async function handle_remove(id: string) {
+  async function handle_remove_connector(id: string) {
     try {
       await api.remove_connector(id);
-      if (active_id === id) active_id = null;
       await refresh_connectors();
     } catch (e) {
       boot_err = String(e);
     }
   }
 
-  const active = $derived(
-    active_id ? connectors.find((c) => c.id === active_id) ?? null : null,
+  function select_session(row: SessionRow) {
+    active = {
+      agent_origin: row.agent_origin,
+      tmux_name: row.info.name,
+      mode: "attach",
+      kind: (row.info.kind as SessionKind) ?? "shell",
+    };
+  }
+
+  function launch_new(agent_origin: string, name: string, kind: SessionKind) {
+    showNewSession = false;
+    active = {
+      agent_origin,
+      tmux_name: name,
+      mode: "new",
+      kind,
+    };
+  }
+
+  function on_search_hit(hit: SearchHit) {
+    // Selecting a search hit attaches to the session it came from.
+    active = {
+      agent_origin: hit.agent_origin,
+      tmux_name: hit.tmux_name,
+      mode: "attach",
+      kind: "shell",
+    };
+  }
+
+  const active_key = $derived(
+    active ? `${active.agent_origin}::${active.tmux_name}` : null,
   );
 
   boot();
@@ -46,35 +83,49 @@
   <Sidebar
     {whoami}
     {connectors}
-    {active_id}
-    onSelect={(c) => (active_id = c.id)}
-    onAdd={() => (showAdd = true)}
-    onRemove={handle_remove}
+    {active_key}
+    onSelectSession={select_session}
+    onNewSession={() => (showNewSession = true)}
+    onAddConnector={() => (showAdd = true)}
+    onRemoveConnector={handle_remove_connector}
+    onSearchHit={on_search_hit}
   />
+
   {#if active}
-    {#key active.id}
-      {#if active.kind === "dd-enclave"}
-        <FleetPane connector={active} />
-      {:else}
-        <SessionPane connector={active} />
-      {/if}
+    {#key active_key}
+      <SessionPane
+        agent_origin={active.agent_origin}
+        tmux_name={active.tmux_name}
+        mode={active.mode}
+        kind={active.kind}
+        onClosed={() => (active = null)}
+      />
     {/key}
   {:else}
     <section class="empty-pane">
       <h1>bastion</h1>
-      <p>Pick a connector on the left — or add one with <kbd>+</kbd>.</p>
+      <p>
+        Pick a session on the left, or click <kbd>+ new</kbd> to start one.
+      </p>
       {#if boot_err}<div class="err">{boot_err}</div>{/if}
     </section>
   {/if}
 
   {#if showAdd}
     <AddConnector
-      onAdded={async (c) => {
+      onAdded={async () => {
         showAdd = false;
         await refresh_connectors();
-        active_id = c.id;
       }}
       onCancel={() => (showAdd = false)}
+    />
+  {/if}
+
+  {#if showNewSession}
+    <NewSessionDialog
+      {connectors}
+      onLaunch={launch_new}
+      onCancel={() => (showNewSession = false)}
     />
   {/if}
 </main>

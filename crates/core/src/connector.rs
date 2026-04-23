@@ -1,12 +1,8 @@
-//! Connector — one entry in the sidebar. A DD enclave, an SSH host,
-//! an Anthropic API key, a GitHub token, or a local shell. Each kind
-//! has a distinct way to enumerate its "sessions" (running shells,
-//! open threads, GitHub events, etc.).
-//!
-//! This module defines the data shape + JSON wire format. Per-kind
-//! logic (how to actually CONNECT) lives alongside the front-end
-//! that knows how to display it — CLI uses it for terminal sessions,
-//! desktop will render a full sidebar.
+//! Connector — one entry in the sidebar. A DD enclave (the only
+//! transport bastion speaks today). Non-DD kinds (ssh-host, anthropic,
+//! github, local-shell) were dropped in the sessions-first restructure;
+//! all live sessions are tmux-on-DD now. Old store entries of dropped
+//! kinds are filtered at load (see `Store::load`) with a warning.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,24 +14,10 @@ use std::collections::HashMap;
 ///   `devopsdefender/dd`'s `/noise/ws` + `/noise/shell/{id}` routes.
 ///   Client static key = identity-seed-derived X25519; server static
 ///   key = pinned via /attest + TDX quote.
-/// - `SshHost` — a classic SSH endpoint. Discovered from
-///   `~/.ssh/config` + `~/.ssh/known_hosts`, or added by the user.
-/// - `Anthropic` — an Anthropic API key. Each conversation thread
-///   becomes a "session" in the sidebar. Future: a single
-///   conversation history per key, synced across devices.
-/// - `Github` — a GitHub token. "Sessions" = notifications / events
-///   feed, maybe PR/issue threads the user is engaged with.
-/// - `LocalShell` — a native PTY on the host running the client.
-///   Desktop-only (browser builds hide it in the sidebar). Useful
-///   for "I want my local zsh in the same UI as my cloud shells."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectorKind {
     DdEnclave,
-    SshHost,
-    Anthropic,
-    Github,
-    LocalShell,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,14 +26,12 @@ pub struct Connector {
     /// this connector entry in the local store.
     pub id: String,
     pub kind: ConnectorKind,
-    /// Human-readable label. For `SshHost` this is typically the
-    /// Host alias from `~/.ssh/config`. For `DdEnclave` it's the
-    /// VM name as reported by the CP's /api/agents.
+    /// Human-readable label. For `DdEnclave` it's the VM name as
+    /// reported by the CP's /api/agents, or a nickname chosen at pair
+    /// time.
     pub label: String,
-    /// Kind-specific config blob. Opaque to this module — each
-    /// front-end deserializes what it needs (origin URL for a DD
-    /// enclave, hostname+user+port for SSH, an encrypted API key for
-    /// Anthropic, etc.).
+    /// Kind-specific config blob. For `DdEnclave`: `origin` (base URL
+    /// of the control plane) and `attestation` (TOFU-pinned pubkey).
     pub config: HashMap<String, serde_json::Value>,
     /// Millis-since-epoch when this connector was first added.
     pub created_at_ms: u64,
@@ -104,17 +84,16 @@ mod tests {
 
     #[test]
     fn connector_round_trips_through_json() {
-        let c = Connector::new(ConnectorKind::SshHost, "prod-gateway")
-            .with_config("hostname", serde_json::json!("prod.example.com"))
-            .with_config("port", serde_json::json!(22));
+        let c = Connector::new(ConnectorKind::DdEnclave, "prod")
+            .with_config("origin", serde_json::json!("https://app.example.com/"));
         let s = serde_json::to_string(&c).unwrap();
         let back: Connector = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, c.id);
         assert_eq!(back.label, c.label);
-        assert_eq!(back.kind, ConnectorKind::SshHost);
+        assert_eq!(back.kind, ConnectorKind::DdEnclave);
         assert_eq!(
-            back.config["hostname"],
-            serde_json::json!("prod.example.com")
+            back.config["origin"],
+            serde_json::json!("https://app.example.com/")
         );
     }
 

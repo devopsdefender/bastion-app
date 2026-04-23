@@ -1,18 +1,12 @@
 //! `bastion` — CLI front-end for the unified terminal client.
 //!
-//! First milestone: prove the core scaffolding works end-to-end.
-//!   - `bastion whoami`  — show device identity fingerprint + pubkey
-//!   - `bastion list`    — dump the connector store
-//!   - `bastion add ssh` — add an SSH host by host/user/port
-//!   - `bastion rm <id>` — remove a connector
-//!
-//! Next milestones (not in this commit):
-//!   - `bastion connect <id>`  — open an interactive session. SSH
-//!     via ssh2/russh, DD enclave via a port of the TS Noise client,
-//!     LocalShell via portable-pty.
-//!   - OSC 133 block parser wired into the session output.
-//!   - A ratatui TUI that shows the sidebar + current session side
-//!     by side, same UX as the desktop app will have.
+//!   - `bastion whoami`           — show device identity fingerprint + pubkey
+//!   - `bastion list`             — dump the connector store
+//!   - `bastion add dd-enclave`   — add a DD enclave by label/origin
+//!   - `bastion rm <id>`          — remove a connector
+//!   - `bastion pair <cp-url>`    — print the enroll URL for this device
+//!   - `bastion connect <id>`     — one-shot Noise_IK EE method call
+//!   - `bastion attach <id>`      — attach to a remote PTY (typically tmux)
 
 use anyhow::{anyhow, bail, Context, Result};
 use bastion_core::{
@@ -93,21 +87,6 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum AddKind {
-    /// Add an SSH host.
-    Ssh {
-        /// Display label in the sidebar.
-        #[arg(long)]
-        label: String,
-        /// Hostname or IP.
-        #[arg(long)]
-        host: String,
-        /// SSH user.
-        #[arg(long, default_value = "root")]
-        user: String,
-        /// SSH port.
-        #[arg(long, default_value_t = 22)]
-        port: u16,
-    },
     /// Add a DD enclave.
     DdEnclave {
         #[arg(long)]
@@ -116,12 +95,6 @@ enum AddKind {
         /// `https://block.pr-42.devopsdefender.com`.
         #[arg(long)]
         origin: String,
-    },
-    /// Add an Anthropic API key. The key itself is read from the
-    /// env var $ANTHROPIC_API_KEY so it never lands in shell history.
-    Anthropic {
-        #[arg(long)]
-        label: String,
     },
 }
 
@@ -181,7 +154,7 @@ fn whoami(dir: &std::path::Path) -> Result<()> {
 fn list(dir: &std::path::Path) -> Result<()> {
     let store = Store::load(dir)?;
     if store.list().is_empty() {
-        println!("(no connectors — run `bastion add ssh --label ... --host ...` to add one)");
+        println!("(no connectors — run `bastion add dd-enclave --label ... --origin ...` to add one)");
         return Ok(());
     }
     for c in store.list() {
@@ -199,26 +172,8 @@ fn list(dir: &std::path::Path) -> Result<()> {
 fn add(dir: &std::path::Path, kind: AddKind) -> Result<()> {
     let mut store = Store::load(dir)?;
     let c = match kind {
-        AddKind::Ssh {
-            label,
-            host,
-            user,
-            port,
-        } => Connector::new(ConnectorKind::SshHost, label)
-            .with_config("host", serde_json::json!(host))
-            .with_config("user", serde_json::json!(user))
-            .with_config("port", serde_json::json!(port)),
         AddKind::DdEnclave { label, origin } => Connector::new(ConnectorKind::DdEnclave, label)
             .with_config("origin", serde_json::json!(origin)),
-        AddKind::Anthropic { label } => {
-            let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-                anyhow!("set ANTHROPIC_API_KEY in env before `bastion add anthropic`")
-            })?;
-            // TODO(phase-2): encrypt the key at rest using the identity
-            // keypair — storing raw is a placeholder for v0.
-            Connector::new(ConnectorKind::Anthropic, label)
-                .with_config("api_key_plaintext", serde_json::json!(key))
-        }
     };
     let id = c.id.clone();
     store.upsert(c);
@@ -467,9 +422,5 @@ fn tofu_pin(conn: Connector, fresh: Attestation) -> Result<(Attestation, Connect
 fn kind_str(k: ConnectorKind) -> &'static str {
     match k {
         ConnectorKind::DdEnclave => "dd-enclave",
-        ConnectorKind::SshHost => "ssh-host",
-        ConnectorKind::Anthropic => "anthropic",
-        ConnectorKind::Github => "github",
-        ConnectorKind::LocalShell => "local-shell",
     }
 }

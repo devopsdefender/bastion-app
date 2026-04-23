@@ -19,6 +19,11 @@ use serde::{Deserialize, Serialize};
 pub struct AttestResponse {
     pub quote_b64: String,
     pub pubkey_hex: String,
+    /// Optional ITA-minted JWT covering the same quote. Landing in
+    /// a follow-up dd PR; absent today, in which case the client
+    /// falls back to TOFU pinning.
+    #[serde(default)]
+    pub ita_token: Option<String>,
 }
 
 /// A pinned, verified (or TOFU'd) attestation result.
@@ -56,10 +61,28 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
     }
     let body: AttestResponse = resp.json().await.context("parse /attest response")?;
     let pubkey = decode_pubkey(&body.pubkey_hex)?;
+    let pubkey_hex = hex::encode(pubkey);
+
+    // If the enclave returned an ITA-signed JWT, verify it against
+    // Intel's JWKS and confirm the `report_data` claim binds to the
+    // pubkey we're about to trust. On success, mark `verified: true`.
+    // On failure, surface the error — we'd rather the handshake
+    // refuse than silently fall back to TOFU when the server
+    // *claimed* to be attested. Absent token keeps TOFU semantics.
+    let verified = if let Some(token) = body.ita_token.as_deref() {
+        crate::ita::Verifier::intel()
+            .verify(token, &pubkey_hex)
+            .await
+            .with_context(|| "verify ITA JWT from /attest")?;
+        true
+    } else {
+        false
+    };
+
     Ok(Attestation {
-        pubkey_hex: hex::encode(pubkey),
+        pubkey_hex,
         quote_b64: body.quote_b64,
-        verified: false,
+        verified,
         fetched_at_ms: now_ms(),
     })
 }

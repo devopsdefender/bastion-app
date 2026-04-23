@@ -1,6 +1,7 @@
 <script lang="ts">
   import Sidebar from "./lib/Sidebar.svelte";
   import SessionPane from "./lib/SessionPane.svelte";
+  import FleetPane from "./lib/FleetPane.svelte";
   import AddConnector from "./lib/AddConnector.svelte";
   import type { Connector, Whoami } from "./lib/tauri";
   import { api } from "./lib/tauri";
@@ -52,7 +53,11 @@
   />
   {#if active}
     {#key active.id}
-      <SessionPane connector={active} />
+      {#if active.kind === "dd-enclave"}
+        <FleetPane connector={active} />
+      {:else}
+        <SessionPane connector={active} />
+      {/if}
     {/key}
   {:else}
     <section class="empty-pane">

@@ -42,6 +42,7 @@ fn main() {
             commands::pair::pair,
             commands::fleet::fetch_agents,
             commands::session::connect_start,
+            commands::session::connect_start_to,
             commands::session::connect_send,
             commands::session::connect_close,
         ])

@@ -25,6 +25,53 @@ pub struct ConnectStartArgs {
     pub connector_id: String,
 }
 
+#[derive(Deserialize)]
+pub struct ConnectStartToArgs {
+    /// Raw origin (`https://<host>` or bare `<host>`) to open a Noise
+    /// session against. Unlike `connect_start`, this doesn't require
+    /// a connector and doesn't persist TOFU pins — suitable for the
+    /// fleet tree, which opens one session per agent enumerated via
+    /// `fetch_agents`.
+    pub origin: String,
+}
+
+/// Open a Noise_IK session to an arbitrary origin. Fetches `/attest`,
+/// handshakes with the device keypair against the returned Noise
+/// static pubkey, stashes the session. No persistence — every call
+/// re-fetches `/attest`, which is fine for the fleet tree's
+/// lazy-open-per-agent pattern.
+#[tauri::command]
+pub async fn connect_start_to(
+    state: State<'_, AppState>,
+    args: ConnectStartToArgs,
+) -> Result<serde_json::Value, String> {
+    let origin = bastion_core::attest::normalize_origin(&args.origin);
+    let attestation = fetch_attest(&origin)
+        .await
+        .map_err(|e| format!("fetch /attest: {e}"))?;
+    let seed = load_or_mint_seed(&state.config_dir).map_err(|e| e.to_string())?;
+    let kp = keypair_from_seed(&seed);
+    let enclave_pubkey = bastion_core::attest::decode_pubkey(&attestation.pubkey_hex)
+        .map_err(|e| format!("decode pubkey: {e}"))?;
+    let session = NoiseClient::connect(&origin, &kp, &enclave_pubkey)
+        .await
+        .map_err(|e| format!("noise handshake: {e}"))?;
+
+    let id = SessionId::new();
+    state
+        .sessions
+        .lock()
+        .await
+        .insert(id.clone(), Arc::new(Mutex::new(session)));
+
+    Ok(serde_json::json!({
+        "session_id": id.0,
+        "origin": origin,
+        "pubkey_hex": attestation.pubkey_hex,
+        "verified": attestation.verified,
+    }))
+}
+
 #[tauri::command]
 pub async fn connect_start(
     state: State<'_, AppState>,

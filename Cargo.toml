@@ -16,7 +16,7 @@ rust-version = "1.82"
 bastion-core = { path = "crates/core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "process", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "sync", "process", "net"] }
 anyhow = "1"
 thiserror = "2"
 directories = "5"

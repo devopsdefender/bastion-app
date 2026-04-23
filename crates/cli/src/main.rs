@@ -16,8 +16,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use bastion_core::{
-    fetch_attest, fingerprint, keypair_from_seed, load_or_mint_seed, Attestation, Connector,
-    ConnectorKind, EeClient, NoiseClient, Store,
+    ee_attach, fetch_attest, fingerprint, keypair_from_seed, load_or_mint_seed, Attestation,
+    Connector, ConnectorKind, EeClient, NoiseClient, Store,
 };
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -77,6 +77,17 @@ enum Cmd {
         /// For `exec`: seconds EE waits for the child before reaping.
         #[arg(long)]
         timeout_secs: Option<u32>,
+    },
+    /// Open a Noise_IK session to a `dd-enclave` connector and attach
+    /// to a PTY — bidirectional raw-byte bridge between the local
+    /// stdin/stdout and the enclave's shell. Terminate with Ctrl-D
+    /// (stdin EOF) or by exiting the remote shell. No local raw-mode
+    /// handling, so line-buffered + local echo until a TTY follow-up.
+    Attach {
+        id: String,
+        /// Shell argv to exec under a PTY. Split by whitespace.
+        #[arg(long, default_value = "bash -l")]
+        cmd: String,
     },
 }
 
@@ -147,6 +158,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Cmd::Attach { id, cmd } => attach(&config_dir, &id, &cmd).await,
     }
 }
 
@@ -364,6 +376,63 @@ async fn connect(
     store.upsert(conn);
     store.save()?;
     Ok(())
+}
+
+async fn attach(dir: &std::path::Path, id: &str, cmd: &str) -> Result<()> {
+    let mut store = Store::load(dir)?;
+    let conn = store
+        .list()
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or_else(|| anyhow!("no connector with id {id}"))?;
+    if conn.kind != ConnectorKind::DdEnclave {
+        bail!(
+            "attach only supports dd-enclave connectors (got {:?})",
+            conn.kind
+        );
+    }
+    let origin = conn
+        .config
+        .get("origin")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("connector {id} missing `origin` config"))?
+        .to_string();
+
+    let attestation = fetch_attest(&origin).await.context("fetch /attest")?;
+    let (attestation, mut conn) = tofu_pin(conn, attestation)?;
+    eprintln!(
+        "→ {origin}  (noise pubkey {})",
+        &attestation.pubkey_hex[..16]
+    );
+
+    let seed = load_or_mint_seed(dir)?;
+    let kp = keypair_from_seed(&seed);
+    let enclave_pubkey = bastion_core::attest::decode_pubkey(&attestation.pubkey_hex)?;
+
+    let session = NoiseClient::connect(&origin, &kp, &enclave_pubkey)
+        .await
+        .context("noise handshake")?;
+    eprintln!("✓ noise handshake complete");
+
+    let argv: Vec<&str> = cmd.split_whitespace().collect();
+    if argv.is_empty() {
+        bail!("--cmd is empty");
+    }
+    let (ack, attach_session) = ee_attach(session, &argv).await.context("attach")?;
+    eprintln!("✓ attached ({})", ack);
+
+    // Persist the pin before we drop into the bridge so a Ctrl-C
+    // mid-session still leaves the connector up-to-date.
+    let attest_json = serde_json::to_value(&attestation)?;
+    conn.config.insert("attestation".into(), attest_json);
+    store.upsert(conn);
+    store.save()?;
+
+    attach_session
+        .bridge(tokio::io::stdin(), tokio::io::stdout())
+        .await
+        .context("attach bridge")
 }
 
 /// On first connect, pin the enclave's pubkey to the connector. On

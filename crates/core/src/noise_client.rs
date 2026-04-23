@@ -9,12 +9,13 @@
 //!      both sides move into transport mode.
 //!   4. Every subsequent WebSocket binary frame is one Noise transport
 //!      message carrying a JSON envelope — one-shot request/response
-//!      semantics for v0 (streaming methods like `exec`/`attach` will
-//!      arrive in a follow-up PR).
+//!      semantics for every method except `attach`, which hands over
+//!      to [`AttachSession`] for a raw byte bridge.
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use snow::{Builder, HandshakeState, TransportState};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -23,6 +24,9 @@ use crate::identity::Keypair;
 
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const MAX_NOISE_MSG: usize = 65535;
+/// Chunk size for stdin → enclave frames during attach. Under
+/// `MAX_NOISE_MSG - 16` with headroom.
+const ATTACH_CHUNK: usize = 4096;
 
 pub struct NoiseClient {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -93,7 +97,111 @@ impl NoiseClient {
         Ok(value)
     }
 
+    /// Consume this client to start an attach session. Sends the
+    /// JSON `{"method": "attach", ...}` envelope, reads the server's
+    /// one-line ack, and hands over the transport+socket to the
+    /// caller as an [`AttachSession`] they can bridge into any
+    /// [`AsyncRead`] / [`AsyncWrite`] pair (stdin/stdout, a PTY, …).
+    ///
+    /// Fails before returning `AttachSession` if the ack signals the
+    /// server rejected the request (`{"error": ...}` instead of
+    /// `{"ok": true}`) — matches what the server-side gateway emits
+    /// for `attach_failed` or `method_rejected`.
+    pub async fn attach(
+        mut self,
+        request: &serde_json::Value,
+    ) -> Result<(serde_json::Value, AttachSession)> {
+        let plain = serde_json::to_vec(request)?;
+        let mut cipher = vec![0u8; plain.len() + 16];
+        let n = self.transport.write_message(&plain, &mut cipher)?;
+        cipher.truncate(n);
+        self.ws
+            .send(Message::Binary(cipher.into()))
+            .await
+            .context("send attach request")?;
+
+        let frame = read_binary(&mut self.ws)
+            .await?
+            .ok_or_else(|| anyhow!("WS closed before attach ack"))?;
+        let mut plain = vec![0u8; frame.len()];
+        let n = self.transport.read_message(&frame, &mut plain)?;
+        plain.truncate(n);
+        let ack: serde_json::Value =
+            serde_json::from_slice(&plain).context("attach ack is not valid JSON")?;
+
+        if ack.get("error").is_some() {
+            bail!("attach rejected: {ack}");
+        }
+        if ack.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            bail!("attach ack missing ok=true: {ack}");
+        }
+
+        Ok((
+            ack,
+            AttachSession {
+                ws: self.ws,
+                transport: self.transport,
+            },
+        ))
+    }
+
     pub async fn close(mut self) -> Result<()> {
+        self.ws.close(None).await.ok();
+        Ok(())
+    }
+}
+
+/// A post-attach Noise session: handshake is complete, the server
+/// has acked, and both sides are now bridging raw bytes. Call
+/// [`Self::bridge`] to drive the pump with a user-supplied stdin
+/// source and stdout sink.
+pub struct AttachSession {
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    transport: TransportState,
+}
+
+impl AttachSession {
+    /// Bridge bytes until either side closes.
+    ///
+    /// `stdin` feeds bytes to the enclave shell (stdin). `stdout`
+    /// receives bytes from the enclave (stdout+stderr interleaved —
+    /// the server does not separate streams). Returns when the
+    /// enclave closes the shell or `stdin` returns EOF.
+    pub async fn bridge<R, W>(mut self, mut stdin: R, mut stdout: W) -> Result<()>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let mut stdin_buf = [0u8; ATTACH_CHUNK];
+        loop {
+            tokio::select! {
+                biased;
+                // enclave -> client
+                frame = read_binary(&mut self.ws) => {
+                    match frame? {
+                        Some(cipher) => {
+                            let mut plain = vec![0u8; cipher.len()];
+                            let n = self.transport.read_message(&cipher, &mut plain)?;
+                            stdout.write_all(&plain[..n]).await?;
+                            stdout.flush().await?;
+                        }
+                        None => break,
+                    }
+                }
+                // client -> enclave
+                n = stdin.read(&mut stdin_buf) => {
+                    match n? {
+                        0 => break,
+                        n => {
+                            let mut cipher = vec![0u8; n + 16];
+                            let m = self.transport.write_message(&stdin_buf[..n], &mut cipher)?;
+                            cipher.truncate(m);
+                            self.ws.send(Message::Binary(cipher.into())).await?;
+                        }
+                    }
+                }
+            }
+        }
         self.ws.close(None).await.ok();
         Ok(())
     }

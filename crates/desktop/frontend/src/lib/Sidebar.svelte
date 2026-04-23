@@ -3,28 +3,43 @@
   import SessionsList from "./SessionsList.svelte";
   import type { SessionRow } from "./SessionsList.svelte";
   import SearchPane from "./SearchPane.svelte";
+  import ReauthBanner from "./ReauthBanner.svelte";
 
   let {
     whoami,
     connectors,
     active_key,
+    refresh_token = 0,
+    auth_issues,
     onSelectSession,
     onNewSession,
     onAddConnector,
     onRemoveConnector,
     onSearchHit,
+    onConnectorAuthState,
+    onDismissAuthIssue,
+    onPaired,
   }: {
     whoami: Whoami | null;
     connectors: Connector[];
     active_key: string | null;
+    refresh_token?: number;
+    auth_issues: Set<string>;
     onSelectSession: (row: SessionRow) => void;
     onNewSession: () => void;
     onAddConnector: () => void;
     onRemoveConnector: (id: string) => void;
     onSearchHit: (hit: SearchHit) => void;
+    onConnectorAuthState: (connector_id: string, needs_auth: boolean) => void;
+    onDismissAuthIssue: (connector_id: string) => void;
+    onPaired: (connector_id: string) => void;
   } = $props();
 
   let nodes_expanded = $state(false);
+
+  const affected = $derived(
+    connectors.filter((c) => auth_issues.has(c.id)),
+  );
 </script>
 
 <aside class="sidebar">
@@ -40,11 +55,21 @@
     {/if}
   </header>
 
+  {#each affected as c (c.id)}
+    <ReauthBanner
+      connector={c}
+      onDismiss={() => onDismissAuthIssue(c.id)}
+      onPaired={() => onPaired(c.id)}
+    />
+  {/each}
+
   <SessionsList
     {connectors}
     {active_key}
+    {refresh_token}
     onSelect={onSelectSession}
     onNew={onNewSession}
+    {onConnectorAuthState}
   />
 
   <SearchPane onSelect={onSearchHit} />

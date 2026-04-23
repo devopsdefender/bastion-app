@@ -20,6 +20,47 @@
   let showAdd = $state(false);
   let showNewSession = $state(false);
   let boot_err: string | null = $state(null);
+  let auth_issues: Set<string> = $state(new Set());
+  let dismissed_auth: Set<string> = $state(new Set());
+  let sessions_refresh_token = $state(0);
+
+  const visible_auth_issues = $derived(
+    new Set(
+      Array.from(auth_issues).filter((id) => !dismissed_auth.has(id)),
+    ),
+  );
+
+  function on_connector_auth_state(
+    connector_id: string,
+    needs_auth: boolean,
+  ) {
+    // Keep the two sets in sync without mutating in place (svelte 5
+    // reactivity on Set depends on reassignment).
+    const next = new Set(auth_issues);
+    if (needs_auth) next.add(connector_id);
+    else next.delete(connector_id);
+    auth_issues = next;
+    // If the user explicitly dismissed a banner, clear that sticky
+    // dismissal once the underlying problem actually resolved.
+    if (!needs_auth && dismissed_auth.has(connector_id)) {
+      const nd = new Set(dismissed_auth);
+      nd.delete(connector_id);
+      dismissed_auth = nd;
+    }
+  }
+
+  function dismiss_auth_issue(connector_id: string) {
+    const nd = new Set(dismissed_auth);
+    nd.add(connector_id);
+    dismissed_auth = nd;
+  }
+
+  function on_paired(_connector_id: string) {
+    // Optimistically clear the banner and trigger a fresh fan-out —
+    // if enrollment didn't actually go through, the refresh will
+    // re-report the auth error and the banner returns.
+    sessions_refresh_token += 1;
+  }
 
   async function boot() {
     try {
@@ -84,11 +125,16 @@
     {whoami}
     {connectors}
     {active_key}
+    refresh_token={sessions_refresh_token}
+    auth_issues={visible_auth_issues}
     onSelectSession={select_session}
     onNewSession={() => (showNewSession = true)}
     onAddConnector={() => (showAdd = true)}
     onRemoveConnector={handle_remove_connector}
     onSearchHit={on_search_hit}
+    onConnectorAuthState={on_connector_auth_state}
+    onDismissAuthIssue={dismiss_auth_issue}
+    onPaired={on_paired}
   />
 
   {#if active}

@@ -10,17 +10,25 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { api, type Agent, type Connector } from "./tauri";
+  import { isAuthError } from "./auth";
 
   let {
     connectors,
     active_key,
+    refresh_token = 0,
     onSelect,
     onNew,
+    onConnectorAuthState,
   }: {
     connectors: Connector[];
     active_key: string | null; // `${origin}::${name}` of the active session
+    /** Bumping this triggers an immediate re-fetch (used by ReauthBanner "retry"). */
+    refresh_token?: number;
     onSelect: (row: SessionRow) => void;
     onNew: () => void;
+    /** Called per connector after each refresh. `needs_auth=true` if every
+     *  agent on that connector failed with an auth-shaped error. */
+    onConnectorAuthState: (connector_id: string, needs_auth: boolean) => void;
   } = $props();
 
   let rows: SessionRow[] = $state([]);
@@ -34,11 +42,19 @@
     const collected: SessionRow[] = [];
     try {
       for (const c of connectors) {
-        const agents = await api.fetch_agents(c.id).catch(() => [] as Agent[]);
+        const agents = await api
+          .fetch_agents(c.id)
+          .catch((e) => {
+            if (isAuthError(e)) onConnectorAuthState(c.id, true);
+            return [] as Agent[];
+          });
+        let any_ok = false;
+        let any_auth_err = false;
         for (const a of agents) {
           const origin = a.hostname;
           try {
             const sessions = await api.tmux_list_sessions(origin);
+            any_ok = true;
             for (const s of sessions) {
               collected.push({
                 agent_origin: origin,
@@ -46,10 +62,15 @@
                 info: s,
               });
             }
-          } catch {
-            // One unreachable agent shouldn't kill the whole list.
+          } catch (e) {
+            if (isAuthError(e)) any_auth_err = true;
+            // Otherwise one unreachable agent shouldn't kill the list.
           }
         }
+        // Flag the connector only if every attempted agent auth-failed
+        // *and* none succeeded. A single working agent means the
+        // allowlist is live; the failure was likely per-agent.
+        onConnectorAuthState(c.id, !any_ok && any_auth_err);
       }
       collected.sort((a, b) => b.info.activity_ts - a.info.activity_ts);
       rows = collected;
@@ -69,8 +90,10 @@
   });
 
   $effect(() => {
-    // Re-fetch when the connector set changes.
+    // Re-fetch when the connector set changes, or when the parent
+    // bumps refresh_token (e.g. after a Re-pair).
     connectors;
+    refresh_token;
     refresh();
   });
 

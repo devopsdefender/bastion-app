@@ -57,7 +57,7 @@ enum Cmd {
         label: Option<String>,
     },
     /// Open a Noise_IK session to a `dd-enclave` connector and call
-    /// a single EE method. v0 supports `health`, `list`, `logs`.
+    /// a single EE method. Supports `health`, `list`, `logs`, `exec`.
     Connect {
         /// Connector id (from `bastion list`).
         id: String,
@@ -70,6 +70,13 @@ enum Cmd {
         /// For `logs`: number of lines to tail.
         #[arg(long, default_value_t = 200)]
         tail: u32,
+        /// For `exec`: argv as a single shell-quoted string, e.g.
+        /// `--cmd "uname -a"`. Split via shell_words.
+        #[arg(long)]
+        cmd: Option<String>,
+        /// For `exec`: seconds EE waits for the child before reaping.
+        #[arg(long)]
+        timeout_secs: Option<u32>,
     },
 }
 
@@ -126,7 +133,20 @@ async fn main() -> Result<()> {
             method,
             deployment,
             tail,
-        } => connect(&config_dir, &id, &method, deployment.as_deref(), tail).await,
+            cmd,
+            timeout_secs,
+        } => {
+            connect(
+                &config_dir,
+                &id,
+                &method,
+                deployment.as_deref(),
+                tail,
+                cmd.as_deref(),
+                timeout_secs,
+            )
+            .await
+        }
     }
 }
 
@@ -266,6 +286,8 @@ async fn connect(
     method: &str,
     deployment: Option<&str>,
     tail: u32,
+    cmd: Option<&str>,
+    timeout_secs: Option<u32>,
 ) -> Result<()> {
     let mut store = Store::load(dir)?;
     let conn = store
@@ -317,7 +339,19 @@ async fn connect(
                 deployment.ok_or_else(|| anyhow!("--deployment required for `--method logs`"))?;
             ee.logs(dep, tail).await?
         }
-        other => bail!("unknown method `{other}` (try health / list / logs)"),
+        "exec" => {
+            let raw = cmd.ok_or_else(|| anyhow!("--cmd required for `--method exec`"))?;
+            // Minimal shell-style split so `--cmd "uname -a"` maps
+            // to argv `["uname", "-a"]`. No quoting/escaping logic
+            // beyond whitespace; callers pass `--cmd "sh -c 'ls | wc -l'"`
+            // when they need shell semantics.
+            let argv: Vec<&str> = raw.split_whitespace().collect();
+            if argv.is_empty() {
+                bail!("--cmd is empty");
+            }
+            ee.exec(&argv, timeout_secs).await?
+        }
+        other => bail!("unknown method `{other}` (try health / list / logs / exec)"),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
 

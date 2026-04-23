@@ -59,8 +59,17 @@ pub struct Claims {
     /// Hex-encoded report_data (64 bytes → 128 hex chars). Intel
     /// emits this under a handful of claim names depending on the
     /// product line; grab whichever is present.
+    ///
+    /// `attester_held_data` is what dd's own ITA mint flow sees in
+    /// practice for TDX v4 (see `dd/src/ita.rs` — same field name).
+    /// The `*_runtime_data_*` / `*_user_data_*` variants cover older
+    /// or adjacent attester types; `attester_tdx_report_data` shows
+    /// up in some TDX schemas and is worth keeping in the alias set
+    /// against future rotations.
     #[serde(
         default,
+        alias = "attester_held_data",
+        alias = "attester_tdx_report_data",
         alias = "attester_runtime_data_report_data",
         alias = "attester_user_data_report_data",
         alias = "attester_report_data",
@@ -162,6 +171,27 @@ mod tests {
         let js2 = r#"{"attester_runtime_data_report_data": "BB"}"#;
         let c2: Claims = serde_json::from_str(js2).unwrap();
         assert_eq!(c2.report_data_hex.as_deref(), Some("BB"));
+    }
+
+    #[test]
+    fn report_data_accepts_held_and_tdx_variants() {
+        // These are the ones Intel actually emits for dd's TDX
+        // attester_type — if serde doesn't pick them up the verifier
+        // silently refuses every handshake with "missing report_data".
+        for key in [
+            "attester_held_data",
+            "attester_tdx_report_data",
+            "attester_user_data_report_data",
+            "attester_report_data",
+        ] {
+            let js = format!(r#"{{"{key}": "CC"}}"#);
+            let c: Claims = serde_json::from_str(&js).unwrap();
+            assert_eq!(
+                c.report_data_hex.as_deref(),
+                Some("CC"),
+                "alias {key} didn't populate report_data_hex"
+            );
+        }
     }
 
     #[test]

@@ -46,7 +46,7 @@ impl<'a> EeClient<'a> {
             .await
     }
 
-    /// `{"method": "exec", "argv": [...], "timeout_secs": N}` — run a
+    /// `{"method": "exec", "cmd": [...], "timeout_secs": N}` — run a
     /// command inside the enclave's EE namespace, wait for exit,
     /// return captured output. Single-frame response — the Noise
     /// gateway doesn't stream output today.
@@ -61,7 +61,8 @@ impl<'a> EeClient<'a> {
         argv: &[&str],
         timeout_secs: Option<u32>,
     ) -> Result<serde_json::Value> {
-        let mut req = json!({ "method": "exec", "argv": argv });
+        // EE's method envelope names the argv array `cmd`.
+        let mut req = json!({ "method": "exec", "cmd": argv });
         if let Some(t) = timeout_secs {
             req["timeout_secs"] = json!(t);
         }

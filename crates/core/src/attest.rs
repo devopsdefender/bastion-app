@@ -1,29 +1,43 @@
-//! `GET /attest` fetcher for a DD enclave's ee-proxy.
+//! `GET /health?verbose=1` fetcher for a DD enclave's ee-proxy.
 //!
-//! Fetches `{ quote_b64, pubkey_hex }` from the ee-proxy endpoint and
-//! returns the decoded Noise static pubkey for the handshake.
+//! The attest bundle used to live at a dedicated `/attest` route; it
+//! now rides as extra fields on the verbose health response. One
+//! endpoint, one public path, one CF Access exemption to maintain.
+//! Bare `/health` (no `verbose=1`) stays a simple liveness ping for
+//! uptime checks. Response shape is the union of health fields + the
+//! attest fields (`quote_b64`, `pubkey_hex`, `ita_token?`); serde's
+//! default tolerates the extra health fields.
 //!
-//! **MVP v0 deliberately skips ITA verification** — we TOFU-pin the
-//! returned `pubkey_hex` on the connector the first time the user
-//! runs `bastion connect`, and reject mismatches on subsequent runs.
-//! Full ITA-JWT verification + MRTD/RTMR pinning is a follow-up:
-//! it requires either client-side ITA credentials or an
-//! attestation-token pre-minted by the ee-proxy and returned here.
-//! The client-facing struct carries a `verified: bool` flag so
-//! callers can branch once that lands.
+//! TOFU semantics unchanged: we pin `pubkey_hex` on first sight and
+//! reject mismatches. ITA JWT verification remains gated on
+//! `ita_token` being present — when it is, we verify it against
+//! Intel's JWKS and flip `verified: true`.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Shape of the `/health?verbose=1` response we care about. The
+/// actual endpoint returns many more fields (uptime, agent counts,
+/// extra ingress, etc.) — serde ignores the ones we don't list.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AttestResponse {
-    pub quote_b64: String,
-    pub pubkey_hex: String,
-    /// Optional ITA-minted JWT covering the same quote. Landing in
-    /// a follow-up dd PR; absent today, in which case the client
-    /// falls back to TOFU pinning.
+pub struct HealthResponse {
+    /// Noise-bootstrap bundle (the former `/attest` body). Required.
+    /// Absent only if we're talking to an old dd that hasn't folded
+    /// attest into health yet — in which case we fail with a clear
+    /// message.
+    pub noise: Option<NoiseBundle>,
+    /// Optional ITA-minted JWT covering the same quote. Present on
+    /// agents unconditionally and on CP with `?verbose=1`; absent on
+    /// off-enclave dev hosts, in which case the client falls back to
+    /// TOFU pinning.
     #[serde(default)]
     pub ita_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoiseBundle {
+    pub quote_b64: String,
+    pub pubkey_hex: String,
 }
 
 /// A pinned, verified (or TOFU'd) attestation result.
@@ -47,7 +61,7 @@ pub struct Attestation {
 /// connector-add UX tolerates either form.
 pub async fn fetch(origin: &str) -> Result<Attestation> {
     let base = normalize_origin(origin);
-    let url = format!("{}/attest", base.trim_end_matches('/'));
+    let url = format!("{}/health?verbose=1", base.trim_end_matches('/'));
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -58,7 +72,7 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
         .with_context(|| format!("GET {url}"))?;
     let status = resp.status();
     if !status.is_success() {
-        // A 3xx here almost always means `/attest` is sitting behind
+        // A 3xx here almost always means `/health` is sitting behind
         // Cloudflare Access. That endpoint must be publicly reachable
         // — it's how clients fetch the enclave's pubkey + TDX quote
         // pre-auth. Give the operator a specific diagnostic instead
@@ -71,7 +85,7 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("<no location>");
             return Err(anyhow!(
-                "GET {url} -> {status}; /attest is not publicly reachable \
+                "GET {url} -> {status}; /health is not publicly reachable \
                  (redirected to {location}). Cloudflare Access is likely \
                  intercepting it — this endpoint must be exempt from CF \
                  Access on the agent host for the Noise handshake to work.",
@@ -79,8 +93,15 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
         }
         return Err(anyhow!("GET {url} -> {}", status));
     }
-    let body: AttestResponse = resp.json().await.context("parse /attest response")?;
-    let pubkey = decode_pubkey(&body.pubkey_hex)?;
+    let body: HealthResponse = resp.json().await.context("parse /health response")?;
+    let noise = body.noise.ok_or_else(|| {
+        anyhow!(
+            "GET {url} succeeded but response has no `noise` bundle — \
+             this dd is older than the fold-attest-into-health change; \
+             upgrade the server or downgrade bastion."
+        )
+    })?;
+    let pubkey = decode_pubkey(&noise.pubkey_hex)?;
     let pubkey_hex = hex::encode(pubkey);
 
     // If the enclave returned an ITA-signed JWT, verify it against
@@ -93,7 +114,7 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
         crate::ita::Verifier::intel()
             .verify(token, &pubkey_hex)
             .await
-            .with_context(|| "verify ITA JWT from /attest")?;
+            .with_context(|| "verify ITA JWT from /health")?;
         true
     } else {
         false
@@ -101,7 +122,7 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
 
     Ok(Attestation {
         pubkey_hex,
-        quote_b64: body.quote_b64,
+        quote_b64: noise.quote_b64,
         verified,
         fetched_at_ms: now_ms(),
     })

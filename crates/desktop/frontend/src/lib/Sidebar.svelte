@@ -79,8 +79,8 @@
         />
       {:else if issue.kind === "attest_blocked"}
         <InfoBanner
-          title={`/attest blocked on ${issue.agent_origin}`}
-          body="Cloudflare Access is intercepting the agent's /attest endpoint. It must be publicly reachable — ask your DD admin to exempt /attest from CF Access."
+          title={`/health blocked on ${issue.agent_origin}`}
+          body="Cloudflare Access is intercepting the agent's /health endpoint. It must be publicly reachable — bastion fetches the Noise pubkey + TDX quote from there pre-handshake. Ask your DD admin to exempt /health from CF Access."
           onDismiss={() => onDismissIssue(issue_key(issue))}
         />
       {:else if issue.kind === "tmux_missing"}

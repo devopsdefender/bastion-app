@@ -27,6 +27,7 @@ export function isAuthError(err: unknown): boolean {
 export function isAttestBlocked(err: unknown): boolean {
   const s = String(err).toLowerCase();
   return (
+    s.includes("/health is not publicly reachable") ||
     s.includes("/attest is not publicly reachable") ||
     s.includes("cloudflare access") ||
     /get .* -> 30\d/.test(s)

@@ -53,18 +53,82 @@ pub struct Attestation {
     pub fetched_at_ms: u64,
 }
 
+/// Raw parts of an attestation response before we bind them to the
+/// verified `Attestation` struct. Intermediate — the on-the-wire
+/// shape differs between legacy `/attest` (top-level quote+pubkey)
+/// and post-fold `/health?verbose=1` (nested `noise` object +
+/// top-level `ita_token`).
+struct RawAttest {
+    quote_b64: String,
+    pubkey_hex: String,
+    ita_token: Option<String>,
+}
+
 /// Fetch the enclave's attestation and decode the Noise static
 /// pubkey. Fails if `pubkey_hex` isn't 32 bytes.
+///
+/// Tries `/health?verbose=1` first (the new surface — the Noise
+/// bootstrap bundle is a nested `noise` object alongside the rest
+/// of the health payload) and falls back to `/attest` for dd
+/// deployments that predate the fold-attest-into-health refactor.
+/// Keeping the fallback makes bastion work against both server
+/// versions during the rollout.
 ///
 /// If `origin` is missing a scheme (e.g. `app.devopsdefender.com`),
 /// `https://` is assumed — DD enclaves only serve TLS, and the
 /// connector-add UX tolerates either form.
 pub async fn fetch(origin: &str) -> Result<Attestation> {
     let base = normalize_origin(origin);
-    let url = format!("{}/health?verbose=1", base.trim_end_matches('/'));
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
+    let base_trim = base.trim_end_matches('/');
+
+    let raw = match try_fetch_health(&http, base_trim).await {
+        Ok(r) => r,
+        Err(health_err) => {
+            // Health didn't give us a noise bundle (old dd, or the
+            // bundle hasn't deployed here yet). Try legacy /attest.
+            match try_fetch_attest(&http, base_trim).await {
+                Ok(r) => r,
+                Err(attest_err) => {
+                    return Err(anyhow!(
+                        "neither /health nor /attest produced a Noise bootstrap bundle:\n  /health: {health_err}\n  /attest: {attest_err}"
+                    ));
+                }
+            }
+        }
+    };
+
+    let pubkey = decode_pubkey(&raw.pubkey_hex)?;
+    let pubkey_hex = hex::encode(pubkey);
+
+    // If the enclave returned an ITA-signed JWT, verify it against
+    // Intel's JWKS and confirm the `report_data` claim binds to the
+    // pubkey we're about to trust. On success, mark `verified: true`.
+    // On failure, surface the error — we'd rather the handshake
+    // refuse than silently fall back to TOFU when the server
+    // *claimed* to be attested. Absent token keeps TOFU semantics.
+    let verified = if let Some(token) = raw.ita_token.as_deref() {
+        crate::ita::Verifier::intel()
+            .verify(token, &pubkey_hex)
+            .await
+            .with_context(|| "verify ITA JWT from attestation")?;
+        true
+    } else {
+        false
+    };
+
+    Ok(Attestation {
+        pubkey_hex,
+        quote_b64: raw.quote_b64,
+        verified,
+        fetched_at_ms: now_ms(),
+    })
+}
+
+async fn try_fetch_health(http: &reqwest::Client, base: &str) -> Result<RawAttest> {
+    let url = format!("{}/health?verbose=1", base);
     let resp = http
         .get(&url)
         .send()
@@ -72,12 +136,6 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
         .with_context(|| format!("GET {url}"))?;
     let status = resp.status();
     if !status.is_success() {
-        // A 3xx here almost always means `/health` is sitting behind
-        // Cloudflare Access. That endpoint must be publicly reachable
-        // — it's how clients fetch the enclave's pubkey + TDX quote
-        // pre-auth. Give the operator a specific diagnostic instead
-        // of just the status code so they can tell it apart from a
-        // generic auth issue and fix the server-side policy.
         if status.is_redirection() {
             let location = resp
                 .headers()
@@ -96,35 +154,54 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
     let body: HealthResponse = resp.json().await.context("parse /health response")?;
     let noise = body.noise.ok_or_else(|| {
         anyhow!(
-            "GET {url} succeeded but response has no `noise` bundle — \
-             this dd is older than the fold-attest-into-health change; \
-             upgrade the server or downgrade bastion."
+            "GET {url} 200 but response has no `noise` bundle (pre-fold dd — falling back)"
         )
     })?;
-    let pubkey = decode_pubkey(&noise.pubkey_hex)?;
-    let pubkey_hex = hex::encode(pubkey);
-
-    // If the enclave returned an ITA-signed JWT, verify it against
-    // Intel's JWKS and confirm the `report_data` claim binds to the
-    // pubkey we're about to trust. On success, mark `verified: true`.
-    // On failure, surface the error — we'd rather the handshake
-    // refuse than silently fall back to TOFU when the server
-    // *claimed* to be attested. Absent token keeps TOFU semantics.
-    let verified = if let Some(token) = body.ita_token.as_deref() {
-        crate::ita::Verifier::intel()
-            .verify(token, &pubkey_hex)
-            .await
-            .with_context(|| "verify ITA JWT from /health")?;
-        true
-    } else {
-        false
-    };
-
-    Ok(Attestation {
-        pubkey_hex,
+    Ok(RawAttest {
         quote_b64: noise.quote_b64,
-        verified,
-        fetched_at_ms: now_ms(),
+        pubkey_hex: noise.pubkey_hex,
+        ita_token: body.ita_token,
+    })
+}
+
+/// Legacy top-level `/attest` endpoint for dd versions that haven't
+/// folded the Noise bundle into `/health` yet.
+#[derive(Deserialize)]
+struct LegacyAttest {
+    quote_b64: String,
+    pubkey_hex: String,
+    #[serde(default)]
+    ita_token: Option<String>,
+}
+
+async fn try_fetch_attest(http: &reqwest::Client, base: &str) -> Result<RawAttest> {
+    let url = format!("{}/attest", base);
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        if status.is_redirection() {
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("<no location>");
+            return Err(anyhow!(
+                "GET {url} -> {status}; /attest is not publicly reachable \
+                 (redirected to {location}). Cloudflare Access is likely \
+                 intercepting it.",
+            ));
+        }
+        return Err(anyhow!("GET {url} -> {}", status));
+    }
+    let body: LegacyAttest = resp.json().await.context("parse /attest response")?;
+    Ok(RawAttest {
+        quote_b64: body.quote_b64,
+        pubkey_hex: body.pubkey_hex,
+        ita_token: body.ita_token,
     })
 }
 

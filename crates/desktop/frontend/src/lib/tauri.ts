@@ -48,8 +48,34 @@ export const api = {
       pubkey_hex: string;
       verified: boolean;
     }>("connect_start", { args: { connector_id } }),
+  connect_start_to: (origin: string) =>
+    invoke<{
+      session_id: string;
+      origin: string;
+      pubkey_hex: string;
+      verified: boolean;
+    }>("connect_start_to", { args: { origin } }),
   connect_send: (session_id: string, request: unknown) =>
     invoke<unknown>("connect_send", { args: { session_id, request } }),
   connect_close: (session_id: string) =>
     invoke<void>("connect_close", { args: { session_id } }),
+
+  fetch_agents: (connector_id: string) =>
+    invoke<Agent[]>("fetch_agents", { connector_id }),
 };
+
+export interface Agent {
+  agent_id: string;
+  vm_name: string;
+  hostname: string;
+  status: string;
+  last_seen: string | null;
+}
+
+export interface Deployment {
+  id: string;
+  app_name: string;
+  status?: string;
+  source?: string;
+  [k: string]: unknown;
+}

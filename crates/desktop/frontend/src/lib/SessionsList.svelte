@@ -23,7 +23,7 @@
     refresh_token = 0,
     onSelect,
     onNew,
-    onConnectorAuthState,
+    onIssues,
   }: {
     connectors: Connector[];
     active_key: string | null; // `${origin}::${name}` of the active session

@@ -1,12 +1,16 @@
 //! Typed EE method helpers over a [`NoiseClient`].
 //!
 //! Every EE method is one JSON request envelope with a `method` field.
-//! The ee-proxy's allowlist gates what's reachable: today `list`,
-//! `logs`, `health`, `attest` are one-shot and work over the
-//! single-frame-response transport the proxy exposes. `exec` and
-//! `attach` are *streaming* on the EE side — they'll work once both
-//! the proxy and this client learn to demux multiple response frames
-//! per request. Out of scope for v0.
+//! The ee-proxy's allowlist gates what's reachable. Today all method
+//! helpers below are single-frame request/response. `exec` runs a
+//! command and returns its captured stdout/stderr/exit_code in one
+//! response once EE has waited for the child to exit.
+//!
+//! True streaming (`attach` to a live PTY, real-time log tailing) is
+//! still open: needs multi-frame responses on the Noise gateway side
+//! and an async stream here. Left for a follow-up; the single-frame
+//! `exec` below is enough for "run a diagnostic command" use cases
+//! that land today.
 
 use anyhow::Result;
 use serde_json::json;
@@ -40,6 +44,28 @@ impl<'a> EeClient<'a> {
         self.session
             .roundtrip(&json!({"method": "logs", "id": id, "tail": tail}))
             .await
+    }
+
+    /// `{"method": "exec", "argv": [...], "timeout_secs": N}` — run a
+    /// command inside the enclave's EE namespace, wait for exit,
+    /// return captured output. Single-frame response — the Noise
+    /// gateway doesn't stream output today.
+    ///
+    /// Returns the raw EE response value; shape typically looks
+    /// like `{ "stdout": "...", "stderr": "...", "exit_code": N }`.
+    /// Caller destructures as appropriate. `timeout_secs` caps how
+    /// long EE waits for the child before reaping it; the Noise
+    /// roundtrip itself has no extra timeout beyond that.
+    pub async fn exec(
+        &mut self,
+        argv: &[&str],
+        timeout_secs: Option<u32>,
+    ) -> Result<serde_json::Value> {
+        let mut req = json!({ "method": "exec", "argv": argv });
+        if let Some(t) = timeout_secs {
+            req["timeout_secs"] = json!(t);
+        }
+        self.session.roundtrip(&req).await
     }
 
     /// Raw escape hatch. Clients that need to call a method this

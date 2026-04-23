@@ -83,6 +83,32 @@ fn parse_exec_stdout(val: &serde_json::Value) -> String {
         .to_string()
 }
 
+fn exec_exit_code(val: &serde_json::Value) -> i64 {
+    val.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+fn exec_stderr(val: &serde_json::Value) -> String {
+    val.get("stderr")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Distinguish "tmux is genuinely missing on the agent" from "tmux is
+/// installed but has zero sessions." The latter is a normal case
+/// (empty list); the former is an admin fix. Exit 127 is `sh`'s
+/// classic command-not-found; we also pattern-match the stderr so
+/// shells that use a different code still get caught.
+fn looks_like_tmux_missing(val: &serde_json::Value) -> bool {
+    if exec_exit_code(val) == 127 {
+        return true;
+    }
+    let stderr = exec_stderr(val).to_lowercase();
+    stderr.contains("tmux: command not found")
+        || stderr.contains("command not found: tmux")
+        || stderr.contains("tmux: not found")
+}
+
 // --- Commands --------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -111,6 +137,17 @@ pub async fn tmux_list_sessions(
         .await
         .map_err(|e| format!("exec tmux ls: {e}"))?;
 
+    // Distinguish "tmux not installed" from "tmux installed, no
+    // sessions." The former is actionable (admin needs to install
+    // tmux); the latter is a normal empty list. Bastion's session
+    // model depends on tmux, so surface the missing case explicitly.
+    if looks_like_tmux_missing(&ls) {
+        return Err(format!(
+            "tmux is not installed on agent {}. Bastion uses tmux for session persistence — install it (e.g. `apt install tmux`) on the agent and retry.",
+            args.agent_origin,
+        ));
+    }
+
     let panes = ee
         .exec(
             &[
@@ -125,8 +162,8 @@ pub async fn tmux_list_sessions(
         .await
         .map_err(|e| format!("exec tmux list-panes: {e}"))?;
 
-    // An agent with zero tmux sessions returns a non-zero exit. Treat
-    // that as "empty list" rather than propagating the error.
+    // An agent with tmux installed but zero sessions returns a
+    // non-zero exit; that's fine, parse_exec_stdout gives us "".
     let ls_text = parse_exec_stdout(&ls);
     let panes_text = parse_exec_stdout(&panes);
 
@@ -257,7 +294,22 @@ async fn spawn_attach(
     let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
     let (ack, attach_session) = ee_attach(session, &argv_refs)
         .await
-        .map_err(|e| format!("ee attach: {e}"))?;
+        .map_err(|e| {
+            // Rewrite obvious "tmux binary missing" errors into the
+            // same actionable message `tmux_list_sessions` emits, so
+            // the frontend classifier has one pattern to match.
+            let s = format!("{e}").to_lowercase();
+            if s.contains("tmux")
+                && (s.contains("not found")
+                    || s.contains("no such file"))
+            {
+                return format!(
+                    "tmux is not installed on agent {}. Bastion uses tmux for session persistence — install it on the agent and retry.",
+                    agent_origin,
+                );
+            }
+            format!("ee attach: {e}")
+        })?;
 
     // Generate a bastion-local UUID for the session. This is separate
     // from the tmux session name: it scopes the pump, the FTS rows,

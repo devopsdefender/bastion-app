@@ -1,44 +1,57 @@
 <script lang="ts">
   import type { Connector, Whoami, SearchHit } from "./tauri";
+  import type { ConnectorIssue } from "./auth";
   import SessionsList from "./SessionsList.svelte";
   import type { SessionRow } from "./SessionsList.svelte";
   import SearchPane from "./SearchPane.svelte";
   import ReauthBanner from "./ReauthBanner.svelte";
+  import InfoBanner from "./InfoBanner.svelte";
 
   let {
     whoami,
     connectors,
     active_key,
     refresh_token = 0,
-    auth_issues,
+    issues,
+    dismissed_issue_keys,
     onSelectSession,
     onNewSession,
     onAddConnector,
     onRemoveConnector,
     onSearchHit,
-    onConnectorAuthState,
-    onDismissAuthIssue,
+    onIssues,
+    onDismissIssue,
     onPaired,
   }: {
     whoami: Whoami | null;
     connectors: Connector[];
     active_key: string | null;
     refresh_token?: number;
-    auth_issues: Set<string>;
+    issues: ConnectorIssue[];
+    dismissed_issue_keys: Set<string>;
     onSelectSession: (row: SessionRow) => void;
     onNewSession: () => void;
     onAddConnector: () => void;
     onRemoveConnector: (id: string) => void;
     onSearchHit: (hit: SearchHit) => void;
-    onConnectorAuthState: (connector_id: string, needs_auth: boolean) => void;
-    onDismissAuthIssue: (connector_id: string) => void;
+    onIssues: (issues: ConnectorIssue[]) => void;
+    onDismissIssue: (key: string) => void;
     onPaired: (connector_id: string) => void;
   } = $props();
 
   let nodes_expanded = $state(false);
 
-  const affected = $derived(
-    connectors.filter((c) => auth_issues.has(c.id)),
+  function issue_key(i: ConnectorIssue): string {
+    if (i.kind === "reauth") return `reauth:${i.connector_id}`;
+    return `${i.kind}:${i.connector_id}:${i.agent_origin}`;
+  }
+
+  function connector_by_id(id: string): Connector | undefined {
+    return connectors.find((c) => c.id === id);
+  }
+
+  const visible_issues = $derived(
+    issues.filter((i) => !dismissed_issue_keys.has(issue_key(i))),
   );
 </script>
 
@@ -55,12 +68,29 @@
     {/if}
   </header>
 
-  {#each affected as c (c.id)}
-    <ReauthBanner
-      connector={c}
-      onDismiss={() => onDismissAuthIssue(c.id)}
-      onPaired={() => onPaired(c.id)}
-    />
+  {#each visible_issues as issue (issue_key(issue))}
+    {@const c = connector_by_id(issue.connector_id)}
+    {#if c}
+      {#if issue.kind === "reauth"}
+        <ReauthBanner
+          connector={c}
+          onDismiss={() => onDismissIssue(issue_key(issue))}
+          onPaired={() => onPaired(c.id)}
+        />
+      {:else if issue.kind === "attest_blocked"}
+        <InfoBanner
+          title={`/attest blocked on ${issue.agent_origin}`}
+          body="Cloudflare Access is intercepting the agent's /attest endpoint. It must be publicly reachable — ask your DD admin to exempt /attest from CF Access."
+          onDismiss={() => onDismissIssue(issue_key(issue))}
+        />
+      {:else if issue.kind === "tmux_missing"}
+        <InfoBanner
+          title={`tmux missing on ${issue.agent_label}`}
+          body="Bastion uses tmux for session persistence. Install tmux on the agent (e.g. `apt install tmux`) and retry."
+          onDismiss={() => onDismissIssue(issue_key(issue))}
+        />
+      {/if}
+    {/if}
   {/each}
 
   <SessionsList
@@ -69,7 +99,7 @@
     {refresh_token}
     onSelect={onSelectSession}
     onNew={onNewSession}
-    {onConnectorAuthState}
+    {onIssues}
   />
 
   <SearchPane onSelect={onSearchHit} />

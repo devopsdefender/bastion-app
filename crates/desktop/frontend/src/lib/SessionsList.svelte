@@ -10,7 +10,12 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { api, type Agent, type Connector } from "./tauri";
-  import { isAuthError } from "./auth";
+  import {
+    isAuthError,
+    isAttestBlocked,
+    isTmuxMissing,
+    type ConnectorIssue,
+  } from "./auth";
 
   let {
     connectors,
@@ -26,9 +31,9 @@
     refresh_token?: number;
     onSelect: (row: SessionRow) => void;
     onNew: () => void;
-    /** Called per connector after each refresh. `needs_auth=true` if every
-     *  agent on that connector failed with an auth-shaped error. */
-    onConnectorAuthState: (connector_id: string, needs_auth: boolean) => void;
+    /** Called once per refresh with the full set of classified issues
+     *  (re-pair / CF-Access-on-/attest / tmux-missing). */
+    onIssues: (issues: ConnectorIssue[]) => void;
   } = $props();
 
   let rows: SessionRow[] = $state([]);
@@ -40,12 +45,15 @@
     loading = true;
     err = null;
     const collected: SessionRow[] = [];
+    const issues: ConnectorIssue[] = [];
     try {
       for (const c of connectors) {
         const agents = await api
           .fetch_agents(c.id)
           .catch((e) => {
-            if (isAuthError(e)) onConnectorAuthState(c.id, true);
+            if (isAuthError(e)) {
+              issues.push({ kind: "reauth", connector_id: c.id });
+            }
             return [] as Agent[];
           });
         let any_ok = false;
@@ -63,17 +71,34 @@
               });
             }
           } catch (e) {
-            if (isAuthError(e)) any_auth_err = true;
-            // Otherwise one unreachable agent shouldn't kill the list.
+            if (isAttestBlocked(e)) {
+              issues.push({
+                kind: "attest_blocked",
+                connector_id: c.id,
+                agent_origin: origin,
+              });
+            } else if (isTmuxMissing(e)) {
+              issues.push({
+                kind: "tmux_missing",
+                connector_id: c.id,
+                agent_origin: origin,
+                agent_label: a.vm_name || a.hostname,
+              });
+            } else if (isAuthError(e)) {
+              any_auth_err = true;
+            }
           }
         }
-        // Flag the connector only if every attempted agent auth-failed
-        // *and* none succeeded. A single working agent means the
-        // allowlist is live; the failure was likely per-agent.
-        onConnectorAuthState(c.id, !any_ok && any_auth_err);
+        // Re-pair is per-connector, only when *every* attempted agent
+        // auth-failed and none succeeded. A single working agent
+        // disproves the "device not on allowlist" theory.
+        if (!any_ok && any_auth_err) {
+          issues.push({ kind: "reauth", connector_id: c.id });
+        }
       }
       collected.sort((a, b) => b.info.activity_ts - a.info.activity_ts);
       rows = collected;
+      onIssues(issues);
     } catch (e) {
       err = String(e);
     } finally {

@@ -56,8 +56,28 @@ pub async fn fetch(origin: &str) -> Result<Attestation> {
         .send()
         .await
         .with_context(|| format!("GET {url}"))?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("GET {url} -> {}", resp.status()));
+    let status = resp.status();
+    if !status.is_success() {
+        // A 3xx here almost always means `/attest` is sitting behind
+        // Cloudflare Access. That endpoint must be publicly reachable
+        // — it's how clients fetch the enclave's pubkey + TDX quote
+        // pre-auth. Give the operator a specific diagnostic instead
+        // of just the status code so they can tell it apart from a
+        // generic auth issue and fix the server-side policy.
+        if status.is_redirection() {
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("<no location>");
+            return Err(anyhow!(
+                "GET {url} -> {status}; /attest is not publicly reachable \
+                 (redirected to {location}). Cloudflare Access is likely \
+                 intercepting it — this endpoint must be exempt from CF \
+                 Access on the agent host for the Noise handshake to work.",
+            ));
+        }
+        return Err(anyhow!("GET {url} -> {}", status));
     }
     let body: AttestResponse = resp.json().await.context("parse /attest response")?;
     let pubkey = decode_pubkey(&body.pubkey_hex)?;

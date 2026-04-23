@@ -27,7 +27,7 @@ pub mod store;
 
 pub use attest::{fetch as fetch_attest, Attestation};
 pub use connector::{Connector, ConnectorKind};
-pub use ee_client::EeClient;
+pub use ee_client::{attach as ee_attach, EeClient};
 pub use identity::{fingerprint, keypair_from_seed, load_or_mint_seed, Keypair};
-pub use noise_client::NoiseClient;
+pub use noise_client::{AttachSession, NoiseClient};
 pub use store::Store;

@@ -1,21 +1,19 @@
 //! Typed EE method helpers over a [`NoiseClient`].
 //!
 //! Every EE method is one JSON request envelope with a `method` field.
-//! The ee-proxy's allowlist gates what's reachable. Today all method
-//! helpers below are single-frame request/response. `exec` runs a
+//! The ee-proxy's allowlist gates what's reachable. All methods below
+//! except `attach` are single-frame request/response. `exec` runs a
 //! command and returns its captured stdout/stderr/exit_code in one
 //! response once EE has waited for the child to exit.
 //!
-//! True streaming (`attach` to a live PTY, real-time log tailing) is
-//! still open: needs multi-frame responses on the Noise gateway side
-//! and an async stream here. Left for a follow-up; the single-frame
-//! `exec` below is enough for "run a diagnostic command" use cases
-//! that land today.
+//! `attach` is the streaming exception — it consumes the underlying
+//! [`NoiseClient`] and hands back an [`AttachSession`] that bridges
+//! raw PTY bytes between the caller's stdin/stdout and the enclave.
 
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::noise_client::NoiseClient;
+use crate::noise_client::{AttachSession, NoiseClient};
 
 pub struct EeClient<'a> {
     session: &'a mut NoiseClient,
@@ -75,4 +73,16 @@ impl<'a> EeClient<'a> {
     pub async fn raw(&mut self, req: serde_json::Value) -> Result<serde_json::Value> {
         self.session.roundtrip(&req).await
     }
+}
+
+/// Open an `attach` session against an already-connected Noise
+/// client. Free function instead of a method on `EeClient<'a>` so
+/// the borrow-checker doesn't fight the `self.session: &'a mut`
+/// shape — `attach` needs to consume the `NoiseClient` by value.
+///
+/// Returns the server's ack value and the streaming session. The
+/// caller drives the session with [`AttachSession::bridge`].
+pub async fn attach(session: NoiseClient, argv: &[&str]) -> Result<(Value, AttachSession)> {
+    let req = json!({ "method": "attach", "cmd": argv });
+    session.attach(&req).await
 }

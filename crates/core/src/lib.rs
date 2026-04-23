@@ -21,6 +21,7 @@ pub mod attest;
 pub mod connector;
 pub mod ee_client;
 pub mod identity;
+pub mod ita;
 pub mod noise_client;
 pub mod store;
 

@@ -1,240 +1,172 @@
 <script lang="ts">
-  import type { Connector } from "./tauri";
+  import TerminalView from "./TerminalView.svelte";
   import { api } from "./tauri";
+  import type { SessionKind } from "./tauri";
 
-  let { connector }: { connector: Connector } = $props();
+  // Mode: either we're attaching to an existing tmux session, or
+  // we're about to create one. Either path resolves to an attach on
+  // the agent side — the backend command differs.
+  let {
+    agent_origin,
+    tmux_name,
+    mode,
+    kind,
+    onClosed,
+  }: {
+    agent_origin: string;
+    tmux_name: string;
+    mode: "attach" | "new";
+    kind: SessionKind;
+    onClosed?: () => void;
+  } = $props();
 
-  let session_id: string | null = $state(null);
-  let pubkey_hex: string | null = $state(null);
-  let verified = $state(false);
-  let connecting = $state(false);
-  let err: string | null = $state(null);
+  let detaching = $state(false);
+  let killing = $state(false);
+  let killErr: string | null = $state(null);
 
-  let output: unknown = $state(null);
-  let sending = $state(false);
-  let method = $state("health");
-  let deployment = $state("");
-  let tail = $state(200);
+  const source = {
+    spawn: async () => {
+      const r =
+        mode === "new"
+          ? await api.tmux_new_session(agent_origin, tmux_name, kind, null)
+          : await api.tmux_attach(agent_origin, tmux_name, kind);
+      return { sessionId: r.bastion_session_id };
+    },
+    write: (id: string, b64: string) => api.tmux_write(id, b64),
+    resize: (id: string, cols: number, rows: number) =>
+      api.tmux_resize(id, cols, rows),
+    close: (id: string) => api.tmux_detach(id),
+    eventPrefix: (id: string) => `session:${id}`,
+  };
 
-  // Parent uses `{#key connector.id}` so this component remounts on
-  // connector change — local state is fresh per connector with no
-  // in-component reset logic. An earlier `$effect` here wiped
-  // `session_id` on self-writes, which made Connect appear silent.
-
-  async function open_session() {
-    connecting = true;
-    err = null;
+  async function kill_session() {
+    killing = true;
+    killErr = null;
     try {
-      const r = await api.connect_start(connector.id);
-      session_id = r.session_id;
-      pubkey_hex = r.pubkey_hex;
-      verified = r.verified;
+      await api.tmux_kill_session(agent_origin, tmux_name);
+      onClosed?.();
     } catch (e) {
-      err = String(e);
+      killErr = String(e);
     } finally {
-      connecting = false;
+      killing = false;
     }
   }
 
-  async function send() {
-    if (!session_id) return;
-    sending = true;
-    err = null;
-    output = null;
+  async function detach_and_close() {
+    detaching = true;
     try {
-      let request: Record<string, unknown> = { method };
-      if (method === "logs") {
-        request.id = deployment;
-        request.tail = tail;
-      }
-      output = await api.connect_send(session_id, request);
-    } catch (e) {
-      err = String(e);
+      onClosed?.();
     } finally {
-      sending = false;
+      detaching = false;
     }
-  }
-
-  async function close_session() {
-    if (!session_id) return;
-    try {
-      await api.connect_close(session_id);
-    } catch (e) {
-      err = String(e);
-    }
-    session_id = null;
-    pubkey_hex = null;
-    verified = false;
-    output = null;
   }
 </script>
 
-<section class="pane">
-  <header>
-    <div class="title">
-      <h2>{connector.label}</h2>
-      <span class="kind">{connector.kind}</span>
+<section class="wrap">
+  <header class="head">
+    <div class="ident">
+      <span class="kind {kind}">{kind}</span>
+      <span class="name">{tmux_name}</span>
+      <span class="agent">@ {agent_origin}</span>
     </div>
-    {#if pubkey_hex}
-      <div class="pin" title={pubkey_hex}>
-        pinned pubkey: {pubkey_hex.slice(0, 16)}…
-        {#if !verified}<span class="tofu">TOFU</span>{/if}
-      </div>
-    {/if}
+    <div class="actions">
+      <button class="btn" disabled={detaching} onclick={detach_and_close}
+        >detach</button
+      >
+      <button
+        class="btn danger"
+        disabled={killing}
+        onclick={kill_session}
+        title="kill this tmux session on the agent">kill</button
+      >
+    </div>
   </header>
-
-  {#if !session_id}
-    <div class="connect-box">
-      <p>Open a Noise_IK session to this enclave.</p>
-      <button onclick={open_session} disabled={connecting}>
-        {connecting ? "handshaking…" : "connect"}
-      </button>
-    </div>
-  {:else}
-    <div class="toolbar">
-      <label>
-        method
-        <select bind:value={method}>
-          <option value="health">health</option>
-          <option value="list">list</option>
-          <option value="logs">logs</option>
-        </select>
-      </label>
-      {#if method === "logs"}
-        <label>
-          deployment
-          <input bind:value={deployment} placeholder="deployment id" />
-        </label>
-        <label>
-          tail
-          <input type="number" bind:value={tail} min="1" max="10000" />
-        </label>
-      {/if}
-      <button onclick={send} disabled={sending || (method === "logs" && !deployment)}>
-        {sending ? "…" : "send"}
-      </button>
-      <button class="close" onclick={close_session}>close session</button>
-    </div>
-
-    <pre class="output">{output === null ? "(no response yet)" : JSON.stringify(output, null, 2)}</pre>
-  {/if}
-
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if killErr}<div class="err">{killErr}</div>{/if}
+  <TerminalView {source} onExit={() => onClosed?.()} />
 </section>
 
 <style>
-  .pane {
+  .wrap {
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: #010409;
-    color: #c9d1d9;
-    padding: 14px;
-    gap: 12px;
-    overflow: hidden;
-    font-family: ui-sans-serif, system-ui;
-    font-size: 13px;
+    min-width: 0;
+    min-height: 0;
   }
-  header {
+  .head {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #0e1116;
     border-bottom: 1px solid #1f242c;
-    padding-bottom: 10px;
+    color: #c9d1d9;
+    font-family: ui-sans-serif, system-ui;
+    font-size: 12px;
   }
-  .title {
+  .ident {
     display: flex;
     align-items: center;
-    gap: 10px;
-  }
-  h2 {
-    margin: 0;
-    font-size: 15px;
+    gap: 8px;
+    min-width: 0;
   }
   .kind {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    color: #7d8590;
-    padding: 2px 6px;
-    border: 1px solid #30363d;
+    padding: 1px 6px;
     border-radius: 3px;
-  }
-  .pin {
     font-family: ui-monospace, monospace;
-    font-size: 11px;
-    color: #7d8590;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
-  .tofu {
-    color: #d29922;
-    margin-left: 6px;
+  .kind.shell {
+    background: #30363d;
+    color: #c9d1d9;
+  }
+  .kind.codex {
+    background: #1f6feb33;
+    color: #58a6ff;
+  }
+  .name {
     font-weight: 600;
   }
-  .connect-box {
-    padding: 24px;
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .toolbar {
-    display: flex;
-    align-items: flex-end;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .toolbar label {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 11px;
+  .agent {
     color: #7d8590;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .toolbar input,
-  .toolbar select {
-    background: #0d1117;
-    color: #c9d1d9;
+  .actions {
+    display: flex;
+    gap: 6px;
+  }
+  .btn {
+    background: #21262d;
     border: 1px solid #30363d;
-    padding: 4px 6px;
-    border-radius: 3px;
-  }
-  button {
-    padding: 6px 12px;
-    background: #238636;
-    color: white;
-    border: 0;
+    color: #c9d1d9;
+    padding: 3px 10px;
     border-radius: 4px;
+    font-size: 11px;
     cursor: pointer;
   }
-  button:disabled {
+  .btn:hover {
+    background: #30363d;
+  }
+  .btn.danger:hover {
+    background: #f8514922;
+    border-color: #f8514966;
+    color: #f85149;
+  }
+  .btn:disabled {
     opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .close {
-    background: #21262d;
-    color: #c9d1d9;
-    border: 1px solid #30363d;
-  }
-  .output {
-    flex: 1;
-    background: #0d1117;
-    border: 1px solid #1f242c;
-    border-radius: 4px;
-    padding: 10px;
-    overflow: auto;
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
-    margin: 0;
+    cursor: default;
   }
   .err {
     background: #f8514922;
     color: #f85149;
-    padding: 6px 10px;
-    border-radius: 4px;
+    padding: 4px 10px;
     font-family: ui-monospace, monospace;
-    font-size: 12px;
-    white-space: pre-wrap;
+    font-size: 11px;
   }
 </style>

@@ -1,24 +1,58 @@
 <script lang="ts">
-  import type { Connector, Whoami } from "./tauri";
-  import { api } from "./tauri";
+  import type { Connector, Whoami, SearchHit } from "./tauri";
+  import type { ConnectorIssue } from "./auth";
+  import SessionsList from "./SessionsList.svelte";
+  import type { SessionRow } from "./SessionsList.svelte";
+  import SearchPane from "./SearchPane.svelte";
+  import ReauthBanner from "./ReauthBanner.svelte";
+  import InfoBanner from "./InfoBanner.svelte";
 
   let {
     whoami,
     connectors,
-    active_id,
-    onSelect,
-    onAdd,
-    onRemove,
+    active_key,
+    refresh_token = 0,
+    issues,
+    dismissed_issue_keys,
+    onSelectSession,
+    onNewSession,
+    onAddConnector,
+    onRemoveConnector,
+    onSearchHit,
+    onIssues,
+    onDismissIssue,
+    onPaired,
   }: {
     whoami: Whoami | null;
     connectors: Connector[];
-    active_id: string | null;
-    onSelect: (c: Connector) => void;
-    onAdd: () => void;
-    onRemove: (id: string) => void;
+    active_key: string | null;
+    refresh_token?: number;
+    issues: ConnectorIssue[];
+    dismissed_issue_keys: Set<string>;
+    onSelectSession: (row: SessionRow) => void;
+    onNewSession: () => void;
+    onAddConnector: () => void;
+    onRemoveConnector: (id: string) => void;
+    onSearchHit: (hit: SearchHit) => void;
+    onIssues: (issues: ConnectorIssue[]) => void;
+    onDismissIssue: (key: string) => void;
+    onPaired: (connector_id: string) => void;
   } = $props();
 
-  const kinds = ["dd-enclave", "ssh-host", "anthropic", "github", "local-shell"] as const;
+  let nodes_expanded = $state(false);
+
+  function issue_key(i: ConnectorIssue): string {
+    if (i.kind === "reauth") return `reauth:${i.connector_id}`;
+    return `${i.kind}:${i.connector_id}:${i.agent_origin}`;
+  }
+
+  function connector_by_id(id: string): Connector | undefined {
+    return connectors.find((c) => c.id === id);
+  }
+
+  const visible_issues = $derived(
+    issues.filter((i) => !dismissed_issue_keys.has(issue_key(i))),
+  );
 </script>
 
 <aside class="sidebar">
@@ -34,39 +68,81 @@
     {/if}
   </header>
 
-  <button class="add" onclick={onAdd}>+ add connector</button>
-
-  {#each kinds as kind}
-    {@const group = connectors.filter((c) => c.kind === kind)}
-    {#if group.length}
-      <section>
-        <h2>{kind}</h2>
-        <ul>
-          {#each group as c (c.id)}
-            <li class:active={c.id === active_id}>
-              <button class="conn" onclick={() => onSelect(c)}>
-                <span class="label">{c.label}</span>
-                <span class="id">{c.id.slice(0, 8)}</span>
-              </button>
-              <button class="rm" title="remove" onclick={() => onRemove(c.id)}>×</button>
-            </li>
-          {/each}
-        </ul>
-      </section>
+  {#each visible_issues as issue (issue_key(issue))}
+    {@const c = connector_by_id(issue.connector_id)}
+    {#if c}
+      {#if issue.kind === "reauth"}
+        <ReauthBanner
+          connector={c}
+          onDismiss={() => onDismissIssue(issue_key(issue))}
+          onPaired={() => onPaired(c.id)}
+        />
+      {:else if issue.kind === "attest_blocked"}
+        <InfoBanner
+          title={`/health blocked on ${issue.agent_origin}`}
+          body="Cloudflare Access is intercepting the agent's /health endpoint. It must be publicly reachable — bastion fetches the Noise pubkey + TDX quote from there pre-handshake. Ask your DD admin to exempt /health from CF Access."
+          onDismiss={() => onDismissIssue(issue_key(issue))}
+        />
+      {:else if issue.kind === "tmux_missing"}
+        <InfoBanner
+          title={`tmux missing on ${issue.agent_label}`}
+          body="Bastion uses tmux for session persistence. Install tmux on the agent (e.g. `apt install tmux`) and retry."
+          onDismiss={() => onDismissIssue(issue_key(issue))}
+        />
+      {/if}
     {/if}
   {/each}
 
-  {#if !connectors.length}
-    <div class="empty">
-      No connectors yet. Click <strong>+ add connector</strong> to pair with
-      an enclave.
+  <SessionsList
+    {connectors}
+    {active_key}
+    {refresh_token}
+    onSelect={onSelectSession}
+    onNew={onNewSession}
+    {onIssues}
+  />
+
+  <SearchPane onSelect={onSearchHit} />
+
+  <section class="nodes">
+    <div class="nodes-toggle">
+      <button
+        class="nodes-expand"
+        onclick={() => (nodes_expanded = !nodes_expanded)}
+      >
+        {nodes_expanded ? "▾" : "▸"} nodes ({connectors.length})
+      </button>
+      <button
+        class="add-small"
+        onclick={onAddConnector}
+        title="add DD enclave">+</button
+      >
     </div>
-  {/if}
+    {#if nodes_expanded}
+      <ul>
+        {#each connectors as c (c.id)}
+          <li>
+            <span class="conn-label">{c.label}</span>
+            <button
+              class="rm"
+              title="remove"
+              onclick={() => onRemoveConnector(c.id)}>×</button
+            >
+          </li>
+        {/each}
+        {#if connectors.length === 0}
+          <li class="empty">
+            No connectors yet. Click <strong>+</strong> to add a DD enclave.
+          </li>
+        {/if}
+      </ul>
+    {/if}
+  </section>
 </aside>
 
 <style>
   .sidebar {
-    width: 240px;
+    width: 260px;
     background: #0e1116;
     color: #c9d1d9;
     border-right: 1px solid #1f242c;
@@ -97,71 +173,75 @@
     font-size: 11px;
     color: #7d8590;
   }
-  .add {
-    background: #238636;
-    color: white;
-    border: 0;
-    border-radius: 4px;
-    padding: 6px 10px;
-    cursor: pointer;
-    font-size: 12px;
+  .nodes {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid #1f242c;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
-  section h2 {
+  .nodes-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+  }
+  .nodes-expand {
+    background: transparent;
+    border: 0;
+    color: #7d8590;
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: #7d8590;
-    margin: 8px 0 4px;
+    cursor: pointer;
+    text-align: left;
+    flex: 1;
   }
-  ul {
+  .add-small {
+    background: #21262d;
+    color: #c9d1d9;
+    border: 1px solid #30363d;
+    border-radius: 3px;
+    cursor: pointer;
+    padding: 0 6px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .add-small:hover {
+    background: #30363d;
+  }
+  .nodes ul {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
   }
-  li {
-    display: flex;
-    align-items: center;
-  }
-  li .conn {
-    flex: 1;
-    text-align: left;
-    padding: 6px 8px;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    border-radius: 4px;
+  .nodes li {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding: 4px 6px;
+    font-size: 12px;
   }
-  li.active .conn {
-    background: #1f6feb33;
-    color: #58a6ff;
-  }
-  li .conn:hover {
-    background: #161b22;
-  }
-  .id {
-    font-family: ui-monospace, monospace;
-    font-size: 10px;
+  .nodes li.empty {
+    font-style: italic;
     color: #7d8590;
+  }
+  .conn-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .rm {
     background: transparent;
     border: 0;
     color: #7d8590;
     cursor: pointer;
-    padding: 0 6px;
+    padding: 0 4px;
   }
   .rm:hover {
     color: #f85149;
-  }
-  .empty {
-    color: #7d8590;
-    font-style: italic;
-    padding: 8px;
   }
 </style>

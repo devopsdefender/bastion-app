@@ -9,12 +9,7 @@ export interface Whoami {
   config_dir: string;
 }
 
-export type ConnectorKind =
-  | "dd-enclave"
-  | "ssh-host"
-  | "anthropic"
-  | "github"
-  | "local-shell";
+export type ConnectorKind = "dd-enclave";
 
 export interface Connector {
   id: string;
@@ -22,6 +17,37 @@ export interface Connector {
   label: string;
   config: Record<string, unknown>;
   created_at_ms: number;
+}
+
+export interface Agent {
+  agent_id: string;
+  vm_name: string;
+  hostname: string;
+  status: string;
+  last_seen: string | null;
+}
+
+export type SessionKind = "shell" | "codex";
+
+export interface TmuxSessionInfo {
+  name: string;
+  activity_ts: number;
+  attached_clients: number;
+  foreground_cmd: string | null;
+  kind: string | null; // "shell" | "codex" | null — heuristic from foreground_cmd
+}
+
+export interface AttachResult {
+  bastion_session_id: string;
+  ack: unknown;
+}
+
+export interface SearchHit {
+  session_id: string;
+  agent_origin: string;
+  tmux_name: string;
+  ts_ms: number;
+  snippet: string;
 }
 
 export const api = {
@@ -41,41 +67,37 @@ export const api = {
       label: string;
     }>("pair", { args: { cp_url, label } }),
 
-  connect_start: (connector_id: string) =>
-    invoke<{
-      session_id: string;
-      origin: string;
-      pubkey_hex: string;
-      verified: boolean;
-    }>("connect_start", { args: { connector_id } }),
-  connect_start_to: (origin: string) =>
-    invoke<{
-      session_id: string;
-      origin: string;
-      pubkey_hex: string;
-      verified: boolean;
-    }>("connect_start_to", { args: { origin } }),
-  connect_send: (session_id: string, request: unknown) =>
-    invoke<unknown>("connect_send", { args: { session_id, request } }),
-  connect_close: (session_id: string) =>
-    invoke<void>("connect_close", { args: { session_id } }),
-
   fetch_agents: (connector_id: string) =>
-    invoke<Agent[]>("fetch_agents", { connector_id }),
+    invoke<Agent[]>("fetch_agents", { connectorId: connector_id }),
+
+  tmux_list_sessions: (agent_origin: string) =>
+    invoke<TmuxSessionInfo[]>("tmux_list_sessions", {
+      args: { agent_origin },
+    }),
+  tmux_new_session: (
+    agent_origin: string,
+    name: string,
+    kind: SessionKind,
+    inner_cmd?: string[] | null,
+  ) =>
+    invoke<AttachResult>("tmux_new_session", {
+      args: { agent_origin, name, kind, inner_cmd: inner_cmd ?? null },
+    }),
+  tmux_attach: (agent_origin: string, name: string, kind?: string | null) =>
+    invoke<AttachResult>("tmux_attach", {
+      args: { agent_origin, name, kind: kind ?? null },
+    }),
+  tmux_write: (bastion_session_id: string, bytes_b64: string) =>
+    invoke<void>("tmux_write", { args: { bastion_session_id, bytes_b64 } }),
+  tmux_resize: (bastion_session_id: string, cols: number, rows: number) =>
+    invoke<void>("tmux_resize", {
+      args: { bastion_session_id, cols, rows },
+    }),
+  tmux_detach: (bastion_session_id: string) =>
+    invoke<void>("tmux_detach", { args: { bastion_session_id } }),
+  tmux_kill_session: (agent_origin: string, name: string) =>
+    invoke<void>("tmux_kill_session", { args: { agent_origin, name } }),
+
+  search_sessions: (query: string, limit = 50) =>
+    invoke<SearchHit[]>("search_sessions", { args: { query, limit } }),
 };
-
-export interface Agent {
-  agent_id: string;
-  vm_name: string;
-  hostname: string;
-  status: string;
-  last_seen: string | null;
-}
-
-export interface Deployment {
-  id: string;
-  app_name: string;
-  status?: string;
-  source?: string;
-  [k: string]: unknown;
-}

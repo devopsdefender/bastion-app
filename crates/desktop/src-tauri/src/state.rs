@@ -2,32 +2,42 @@
 //!
 //! - `config_dir` — where `bastion-core::Store` persists connectors +
 //!   the identity seed. Same dir the CLI uses, by default.
-//! - `sessions` — live `NoiseClient`s keyed by a server-generated
-//!   `SessionId`. A connector can have multiple open sessions; each
-//!   is an independent Noise handshake against the same enclave.
+//! - `attaches` — live tmux-attached sessions. Each one owns a pump
+//!   task pulling bytes off the enclave's AttachSession, a writer
+//!   channel into which the frontend pipes keystrokes, and an abort
+//!   handle so `tmux_detach` can tear it down cleanly.
+//! - `log` — SQLite-backed per-device FTS5 index of session text.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bastion_core::NoiseClient;
-use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
-pub type SessionMap = HashMap<SessionId, Arc<Mutex<NoiseClient>>>;
+use crate::session_log::SessionLog;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct SessionId(pub String);
-
-impl SessionId {
-    pub fn new() -> Self {
-        // v4 UUID, no dashes — compact for logs.
-        Self(uuid::Uuid::new_v4().as_simple().to_string())
-    }
+/// Live attach-session handle. The pump task is the authoritative
+/// owner of the underlying `AttachSession`; the handle exposes a
+/// writer channel and an abort knob.
+#[allow(dead_code)]
+pub struct AttachHandle {
+    // Reserved for future endpoints that surface live attaches in the
+    // sidebar ("attached here / elsewhere / detached" badges).
+    pub bastion_session_id: String,
+    pub agent_origin: String,
+    pub tmux_name: String,
+    pub kind: Option<String>,
+    /// Bytes from the frontend (keystrokes) go here.
+    pub tx_bytes: mpsc::UnboundedSender<Vec<u8>>,
+    /// Aborts the pump task. Used by `tmux_detach`.
+    pub abort: tokio::task::AbortHandle,
 }
+
+pub type AttachMap = HashMap<String, AttachHandle>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config_dir: PathBuf,
-    pub sessions: Arc<Mutex<SessionMap>>,
+    pub attaches: Arc<Mutex<AttachMap>>,
+    pub log: Arc<SessionLog>,
 }

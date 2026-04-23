@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Connector, ConnectorKind } from "./tauri";
+  import type { Connector } from "./tauri";
   import { api } from "./tauri";
 
   let {
@@ -10,16 +10,10 @@
     onCancel: () => void;
   } = $props();
 
-  let kind: ConnectorKind = $state("dd-enclave");
   let label = $state("");
-  // dd-enclave
   let origin = $state("");
-  // ssh
-  let ssh_host = $state("");
-  let ssh_user = $state("root");
-  let ssh_port = $state(22);
 
-  // pair flow — only visible for dd-enclave
+  // pair flow
   let cp_url = $state("https://app.devopsdefender.com");
   let pairing = $state(false);
   let pair_result: string | null = $state(null);
@@ -49,11 +43,7 @@
     busy = true;
     err = null;
     try {
-      let config: Record<string, unknown> = {};
-      if (kind === "dd-enclave") config = { origin };
-      else if (kind === "ssh-host")
-        config = { host: ssh_host, user: ssh_user, port: ssh_port };
-      const c = await api.add_connector(kind, label, config);
+      const c = await api.add_connector("dd-enclave", label, { origin });
       onAdded(c);
     } catch (e) {
       err = String(e);
@@ -63,62 +53,54 @@
   }
 </script>
 
-<div class="overlay" onclick={onCancel} onkeydown={(e) => e.key === "Escape" && onCancel()} role="button" tabindex="-1">
-  <form class="modal" onclick={(e) => e.stopPropagation()} onsubmit={submit}>
-    <h2>Add connector</h2>
-
-    <label>
-      <span>Kind</span>
-      <select bind:value={kind}>
-        <option value="dd-enclave">dd-enclave</option>
-        <option value="ssh-host">ssh-host</option>
-        <option value="anthropic">anthropic</option>
-        <option value="github">github</option>
-        <option value="local-shell">local-shell</option>
-      </select>
-    </label>
+<div
+  class="overlay"
+  onclick={onCancel}
+  onkeydown={(e) => e.key === "Escape" && onCancel()}
+  role="button"
+  tabindex="-1"
+>
+  <form
+    class="modal"
+    onclick={(e) => e.stopPropagation()}
+    onsubmit={submit}
+  >
+    <h2>Add DD enclave</h2>
 
     <label>
       <span>Label</span>
-      <input bind:value={label} placeholder="prod / my-laptop / …" required />
+      <input bind:value={label} placeholder="prod / staging / …" required />
     </label>
 
-    {#if kind === "dd-enclave"}
-      <fieldset>
-        <legend>Pair with DD control plane</legend>
-        <label>
-          <span>CP URL</span>
-          <input bind:value={cp_url} placeholder="https://app.devopsdefender.com" />
-        </label>
-        <button type="button" onclick={pair_now} disabled={pairing}>
-          {pairing ? "pairing…" : "pair this device"}
-        </button>
-        {#if pair_result}<div class="ok">{pair_result}</div>{/if}
-      </fieldset>
-
+    <fieldset>
+      <legend>Pair with DD control plane</legend>
       <label>
-        <span>Origin</span>
-        <input bind:value={origin} placeholder="https://app.devopsdefender.com" required />
+        <span>CP URL</span>
+        <input
+          bind:value={cp_url}
+          placeholder="https://app.devopsdefender.com"
+        />
       </label>
-    {:else if kind === "ssh-host"}
-      <label><span>Host</span><input bind:value={ssh_host} required /></label>
-      <label><span>User</span><input bind:value={ssh_user} /></label>
-      <label><span>Port</span><input type="number" bind:value={ssh_port} /></label>
-      <div class="warn">
-        Note: SSH connectors aren't reachable from this desktop yet —
-        only dd-enclave is wired through the Noise gateway.
-      </div>
-    {:else}
-      <div class="warn">
-        This connector kind is stored but not yet usable from the desktop.
-      </div>
-    {/if}
+      <button type="button" onclick={pair_now} disabled={pairing}>
+        {pairing ? "pairing…" : "pair this device"}
+      </button>
+      {#if pair_result}<div class="ok">{pair_result}</div>{/if}
+    </fieldset>
+
+    <label>
+      <span>Origin</span>
+      <input
+        bind:value={origin}
+        placeholder="https://app.devopsdefender.com"
+        required
+      />
+    </label>
 
     {#if err}<div class="err">{err}</div>{/if}
 
     <div class="actions">
       <button type="button" onclick={onCancel}>cancel</button>
-      <button type="submit" disabled={busy || !label}>
+      <button type="submit" disabled={busy || !label || !origin}>
         {busy ? "saving…" : "save"}
       </button>
     </div>
@@ -163,8 +145,7 @@
     color: #7d8590;
     text-transform: uppercase;
   }
-  input,
-  select {
+  input {
     padding: 6px 8px;
     background: #0d1117;
     border: 1px solid #30363d;
@@ -219,10 +200,5 @@
     padding: 6px 10px;
     border-radius: 4px;
     font-size: 12px;
-  }
-  .warn {
-    color: #d29922;
-    font-size: 12px;
-    font-style: italic;
   }
 </style>

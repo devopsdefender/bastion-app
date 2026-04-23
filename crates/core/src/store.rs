@@ -32,14 +32,40 @@ pub struct Store {
 impl Store {
     /// Load the store at `<config_dir>/connectors.json`, or return an
     /// empty store if the file doesn't exist.
+    ///
+    /// Tolerates entries with kinds this bastion no longer supports
+    /// (e.g. `ssh-host`, `anthropic`, `github`, `local-shell` from
+    /// pre-sessions-restructure bastions): those rows are skipped with
+    /// a stderr warning and omitted from the loaded list. On next
+    /// `save()` they are dropped from disk.
     pub fn load(config_dir: &Path) -> Result<Self> {
         let path = config_dir.join("connectors.json");
         let connectors = if path.exists() {
             let text =
                 fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-            let file: StoreFile =
+            let raw: serde_json::Value =
                 serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-            file.connectors
+            let arr = raw
+                .get("connectors")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, item) in arr.into_iter().enumerate() {
+                match serde_json::from_value::<Connector>(item.clone()) {
+                    Ok(c) => out.push(c),
+                    Err(e) => {
+                        let label = item
+                            .get("label")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("<unknown>");
+                        eprintln!(
+                            "bastion: skipping unrecognized connector #{i} ({label}): {e}"
+                        );
+                    }
+                }
+            }
+            out
         } else {
             Vec::new()
         };
@@ -111,7 +137,7 @@ mod tests {
     fn upsert_save_load_roundtrips() {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::load(tmp.path()).unwrap();
-        let c = Connector::new(ConnectorKind::SshHost, "dev-box");
+        let c = Connector::new(ConnectorKind::DdEnclave, "dev-box");
         let id = c.id.clone();
         s.upsert(c);
         s.save().unwrap();
@@ -125,7 +151,7 @@ mod tests {
     fn remove_works() {
         let tmp = tempfile::tempdir().unwrap();
         let mut s = Store::load(tmp.path()).unwrap();
-        let c = Connector::new(ConnectorKind::Anthropic, "main-key");
+        let c = Connector::new(ConnectorKind::DdEnclave, "main-key");
         let id = c.id.clone();
         s.upsert(c);
         assert!(s.remove(&id).is_some());
